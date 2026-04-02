@@ -1,7 +1,4 @@
 #![no_std]
-#![feature(fn_traits)]
-#![feature(box_into_inner)]
-#![feature(try_trait_v2)]
 
 #[macro_use]
 extern crate alloc;

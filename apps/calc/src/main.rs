@@ -121,7 +121,7 @@ pub fn main() {
         }
     } else {
         print!("{args} ");
-        match solve(&args) {
+        match solve(args) {
             Ok(sol) => println!(" = {sol}"),
             Err(e) => println!(" {e}"),
         }
