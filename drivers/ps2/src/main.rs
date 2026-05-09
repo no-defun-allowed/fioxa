@@ -7,15 +7,13 @@ extern crate userspace;
 extern crate userspace_slaballoc;
 
 use alloc::vec::Vec;
-use kernel_sys::types::ObjectSignal;
-use kernel_userspace::{
-    channel::Channel,
-    interrupt::{InterruptVector, InterruptsService},
-    ipc::IPCChannel,
-    port::Port,
-    process::InitHandleService,
-    service::run_service_iter,
+use fioxa_rpc::{
+    interrupt::InterruptClient,
+    interrupt_capnp,
+    service::{register_service, run_service_iter},
 };
+use kernel_sys::types::ObjectSignal;
+use kernel_userspace::{channel::Channel, port::Port};
 use userspace::log::info;
 use x86_64::instructions::port::{PortReadOnly, PortWriteOnly};
 
@@ -37,9 +35,9 @@ pub fn main() {
     }
 
     let (kb_ev, ms_ev) = {
-        let mut interrupts = InterruptsService::from_channel(IPCChannel::connect("INTERRUPTS"));
-        let kb = interrupts.get_interrupt(InterruptVector::Keyboard).unwrap();
-        let ms = interrupts.get_interrupt(InterruptVector::Mouse).unwrap();
+        let mut interrupts = InterruptClient::wellknown();
+        let kb = interrupts.subscribe(interrupt_capnp::Vector::Keyboard);
+        let ms = interrupts.subscribe(interrupt_capnp::Vector::Mouse);
         (kb, ms)
     };
 
@@ -51,11 +49,8 @@ pub fn main() {
     let (kb_service, kb_right) = Channel::new();
     let (ms_service, ms_right) = Channel::new();
 
-    {
-        let mut init = InitHandleService::connect();
-        assert!(!init.publish_handle("INPUT:KB", kb_right.into_inner()));
-        assert!(!init.publish_handle("INPUT:MOUSE", ms_right.into_inner()));
-    };
+    register_service("INPUT:KB", kb_right.into_inner()).unwrap();
+    register_service("INPUT:MOUSE", ms_right.into_inner()).unwrap();
 
     let port = Port::new();
 

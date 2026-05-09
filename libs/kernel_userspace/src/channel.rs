@@ -6,11 +6,10 @@ use kernel_sys::{
     },
     types::{Hid, SyscallError},
 };
-use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::handle::Handle;
 
-#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Channel(Handle);
 
 impl Channel {

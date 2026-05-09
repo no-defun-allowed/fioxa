@@ -1,6 +1,4 @@
-use alloc::sync::Arc;
 use kernel_sys::syscall::sys_process_spawn_thread;
-use kernel_userspace::{disk::DiskService, mutex::Mutex};
 
 use crate::fs::{FSPartitionDisk, fat::read_bios_block};
 
@@ -24,8 +22,11 @@ pub struct MasterBootRecord {
     magic_number: [u8; 2],
 }
 
-pub fn read_partitions(drive: Arc<Mutex<DiskService>>) {
-    let mbr = drive.lock().read(0, 1).deserialize().unwrap();
+pub fn read_partitions(drive: FSPartitionDisk) {
+    let mbr = drive.read(0, 1);
+    let mut mbr = mbr.get_reply().unwrap();
+    let mbr = mbr.get_message().unwrap().get_data().unwrap();
+
     let mbr = unsafe { &mut *(mbr.as_ptr() as *mut MasterBootRecord) };
 
     assert!(
@@ -43,8 +44,7 @@ pub fn read_partitions(drive: Arc<Mutex<DiskService>>) {
                 part.length / 1024 * 512 / 1024,
                 { part.bootable } == 0x80
             );
-            let fs_disk =
-                FSPartitionDisk::new(drive.clone(), part.start_lba as u64, part.length as u64);
+            let fs_disk = drive.narrow(part.start_lba as u64, part.length as u64);
             sys_process_spawn_thread(|| read_bios_block(fs_disk));
         }
     }

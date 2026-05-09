@@ -1,13 +1,12 @@
 use core::fmt::Write;
 
 use alloc::{string::String, vec::Vec};
+use fioxa_rpc::interrupt::InterruptClient;
 use kernel_sys::syscall::{sys_exit, sys_process_spawn_thread};
 use kernel_userspace::{
     backoff_sleep,
     channel::Channel,
     handle::{FIRST_HANDLE, Handle},
-    interrupt::InterruptsService,
-    ipc::IPCChannel,
     process::ProcessHandle,
 };
 use spin::Once;
@@ -159,9 +158,7 @@ pub fn serial_monitor_stdin() {
         warn!("Serial device not found");
         sys_exit();
     };
-    let comm1 = InterruptsService::from_channel(IPCChannel::connect("INTERRUPTS"))
-        .get_interrupt(kernel_userspace::interrupt::InterruptVector::COM1)
-        .unwrap();
+    let comm1 = InterruptClient::wellknown().subscribe(fioxa_rpc::interrupt_capnp::Vector::Com1);
 
     let (stdin, cin) = Channel::new();
     let (stdout, cout) = Channel::new();
@@ -170,12 +167,15 @@ pub fn serial_monitor_stdin() {
         loop {
             let proc = load_elf(early_bootfs_get("terminal").unwrap())
                 .unwrap()
-                .references(ProcessReferences::from_refs(&[
-                    FIRST_HANDLE,
-                    **cin.handle(),
-                    **cout.handle(),
-                    **cout.handle(),
-                ]))
+                .references(ProcessReferences::from_refs(
+                    [
+                        FIRST_HANDLE,
+                        **cin.handle(),
+                        **cout.handle(),
+                        **cout.handle(),
+                    ]
+                    .into_iter(),
+                ))
                 .build();
 
             let mut proc = unsafe {

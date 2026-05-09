@@ -1,11 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["input", "kernel_sys", "kernel_userspace", "userspace", "userspace_slaballoc"]
+members = ["fioxa_rpc","input", "kernel_sys", "kernel_userspace", "userspace", "userspace_slaballoc"]
 
 [workspace.package]
 edition = "2024"
 
 [workspace.dependencies]
+fioxa_rpc = { path = "fioxa_rpc" }
 input = { path = "input" }
 kernel_sys = { path = "kernel_sys" }
 kernel_userspace = { path = "kernel_userspace" }

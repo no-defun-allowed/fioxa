@@ -2,23 +2,16 @@ use kernel_sys::{
     syscall::{sys_object_wait, sys_process_exit_code},
     types::{ObjectSignal, SyscallError},
 };
-use rkyv::{
-    Archive, Deserialize, Serialize,
-    rancor::{Error, Source},
-    with::InlineAsBox,
-};
 
 use crate::{
     channel::Channel,
     handle::{FIRST_HANDLE, Handle},
-    ipc::IPCChannel,
-    service::Service,
 };
 
-pub static INIT_HANDLE_SERVICE: Service =
-    unsafe { Service(Channel::from_handle(Handle::from_id(FIRST_HANDLE))) };
+pub static INIT_HANDLE_CHANNEL: Channel =
+    unsafe { Channel::from_handle(Handle::from_id(FIRST_HANDLE)) };
 
-#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessHandle(Handle);
 
 impl ProcessHandle {
@@ -50,78 +43,4 @@ impl ProcessHandle {
             };
         }
     }
-}
-
-#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
-pub enum InitHandleMessage<'a> {
-    GetHandle(#[rkyv(with = InlineAsBox)] &'a str),
-    PublishHandle(#[rkyv(with = InlineAsBox)] &'a str, Handle),
-}
-
-pub struct InitHandleService(IPCChannel);
-
-impl InitHandleService {
-    pub fn from_channel(chan: IPCChannel) -> Self {
-        Self(chan)
-    }
-
-    pub fn connect() -> Self {
-        Self(IPCChannel::from_channel(
-            INIT_HANDLE_SERVICE.connect().unwrap(),
-        ))
-    }
-
-    pub fn get_handle(&mut self, name: &str) -> Option<Handle> {
-        self.0.send(&InitHandleMessage::GetHandle(name)).unwrap();
-        let mut msg = self.0.recv().unwrap();
-        msg.deserialize().unwrap()
-    }
-
-    pub fn publish_handle(&mut self, name: &str, handle: Handle) -> bool {
-        self.0
-            .send(&InitHandleMessage::PublishHandle(name, handle))
-            .unwrap();
-        let mut msg = self.0.recv().unwrap();
-        msg.deserialize().unwrap()
-    }
-}
-
-pub struct InitHandleServiceExecutor<I: InitHandleServiceImpl> {
-    channel: IPCChannel,
-    service: I,
-}
-
-impl<I: InitHandleServiceImpl> InitHandleServiceExecutor<I> {
-    pub fn new(channel: IPCChannel, service: I) -> Self {
-        Self { channel, service }
-    }
-
-    pub fn run(&mut self) -> Result<(), Error> {
-        loop {
-            let mut msg = match self.channel.recv() {
-                Ok(m) => m,
-                Err(SyscallError::ChannelClosed) => return Ok(()),
-                Err(e) => return Err(Error::new(e)),
-            };
-            let (msg, des) = msg.access::<ArchivedInitHandleMessage>()?;
-
-            match msg {
-                ArchivedInitHandleMessage::GetHandle(name) => {
-                    let res = self.service.get_handle(name);
-                    self.channel.send(&res)
-                }
-                ArchivedInitHandleMessage::PublishHandle(name, handle) => {
-                    let res = self.service.publish_handle(name, handle.deserialize(des)?);
-                    self.channel.send(&res)
-                }
-            }
-            .map_err(Error::new)?;
-        }
-    }
-}
-
-pub trait InitHandleServiceImpl {
-    fn get_handle(&mut self, name: &str) -> Option<Handle>;
-
-    fn publish_handle(&mut self, name: &str, handle: Handle) -> bool;
 }

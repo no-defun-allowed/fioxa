@@ -29,6 +29,7 @@
           packages = [
             pkgs.git
             pkgs.qemu_kvm
+            pkgs.capnproto
           ];
           buildInputs = [
             (pkgs.rust-bin.nightly.latest.default.override {

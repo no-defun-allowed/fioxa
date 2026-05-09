@@ -1,12 +1,9 @@
-use core::{
-    mem::{MaybeUninit, size_of},
-    pin::Pin,
-    time::Duration,
-};
+use core::{mem::size_of, pin::Pin, time::Duration};
 
 use alloc::boxed::Box;
+use fioxa_rpc::disk_capnp;
 use kernel_sys::syscall::sys_sleep;
-use kernel_userspace::disk::{DiskServiceImpl, ata::ATADiskIdentify};
+use kernel_userspace::disk::ata::ATADiskIdentify;
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
@@ -243,17 +240,29 @@ impl Port {
     }
 }
 
-impl DiskServiceImpl for Port {
-    fn read(&mut self, sector: u64, length: u64) -> alloc::vec::Vec<u8> {
-        let mut buffer = vec![0u8; (length * 512) as usize];
+impl fioxa_rpc::disk::Service for Port {
+    fn read<'a>(
+        &mut self,
+        req: fioxa_rpc::OwnedReader<'a, disk_capnp::read::Owned>,
+        _req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        res: fioxa_rpc::OwnedBuilder<'a, disk_capnp::read_resp::Owned>,
+        _res_handles: &'a mut fioxa_rpc::RPCHandleBuilder<'static>,
+    ) -> Result<(), ::capnp::Error> {
+        let length = req
+            .get_count()
+            .checked_mul(512)
+            .ok_or_else(|| capnp::Error::failed("length overflow".into()))?;
+
+        let buffer = res.init_data(length);
 
         let mut read_head = 0usize;
-        let read_tail = length as usize;
+        let sector = req.get_sector() as usize;
+        let read_tail = req.get_count() as usize;
 
         while read_head < read_tail {
             let count = (read_tail - read_head).min(MAX_SECTORS);
             self.read_into_buf(
-                sector as usize + read_head,
+                sector + read_head,
                 count as u32,
                 &mut buffer[read_head * 512..(read_head + count) * 512],
             )
@@ -261,10 +270,18 @@ impl DiskServiceImpl for Port {
             read_head += count;
         }
 
-        buffer
+        Ok(())
     }
 
-    fn identify(&mut self) -> ATADiskIdentify {
+    fn identify<'a>(
+        &mut self,
+        _req: fioxa_rpc::OwnedReader<'a, disk_capnp::identify::Owned>,
+        _req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        res: fioxa_rpc::OwnedBuilder<'a, disk_capnp::read_resp::Owned>,
+        _res_handles: &'a mut fioxa_rpc::RPCHandleBuilder<'static>,
+    ) -> Result<(), ::capnp::Error> {
+        let buffer = res.init_data(512);
+
         self.hba_port.interrupt_status.write(0xFFFFFFFF);
         let slot = self.find_slot() as usize;
 
@@ -274,9 +291,7 @@ impl DiskServiceImpl for Port {
 
         let cmd_table = &mut self.cmd_tables[slot];
 
-        let identify: MaybeUninit<ATADiskIdentify> = MaybeUninit::uninit();
-
-        let start_addr = identify.as_ptr() as usize;
+        let start_addr = buffer.as_ptr() as usize;
 
         let page_1_free = 0x1000 - (start_addr & 0xFFF);
         let page_1_addr = unsafe { get_phys_addr_from_vaddr(start_addr as u64).unwrap() };
@@ -331,6 +346,6 @@ impl DiskServiceImpl for Port {
         if i == 0 {
             todo!("Failed to read identify")
         }
-        unsafe { identify.assume_init() }
+        Ok(())
     }
 }

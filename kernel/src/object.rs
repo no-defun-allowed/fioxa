@@ -1,17 +1,11 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
+use fioxa_rpc::{registry_capnp, service::ServiceExecutor};
 use hashbrown::HashMap;
 use kernel_sys::{
     syscall::sys_process_spawn_thread,
     types::{ObjectSignal, SysPortNotification, SysPortNotificationValue},
 };
-use kernel_userspace::{
-    channel::Channel,
-    handle::Handle,
-    ipc::IPCChannel,
-    mutex::Mutex,
-    process::{InitHandleServiceExecutor, InitHandleServiceImpl},
-    service::ServiceExecutor,
-};
+use kernel_userspace::{channel::Channel, handle::Handle, mutex::Mutex};
 
 use crate::{port::KPort, scheduling::process::Thread};
 
@@ -84,8 +78,15 @@ pub trait KObject {
     fn signals<T>(&self, f: impl FnOnce(&mut KObjectSignal) -> T) -> T;
 }
 
+#[derive(Default, Debug, Clone)]
+struct Entry {
+    sources: Vec<Arc<Handle>>,
+    single_waiters: Vec<Channel>,
+    subscribers: Vec<Channel>,
+}
+
 struct InitSharedData {
-    handles: HashMap<String, Handle>,
+    handles: HashMap<String, Entry>,
 }
 
 pub fn serve_init_service() -> Channel {
@@ -98,12 +99,7 @@ pub fn serve_init_service() -> Channel {
         ServiceExecutor::from_channel(right, |chan| {
             let shared = shared.clone();
             sys_process_spawn_thread(|| {
-                match InitHandleServiceExecutor::new(
-                    IPCChannel::from_channel(chan),
-                    InitHandler { shared },
-                )
-                .run()
-                {
+                match fioxa_rpc::server::RPCServer::new(chan, InitHandler { shared }).run() {
                     Ok(()) => (),
                     Err(e) => warn!("error handling init service: {e}"),
                 }
@@ -120,18 +116,79 @@ struct InitHandler {
     shared: Arc<Mutex<InitSharedData>>,
 }
 
-impl InitHandleServiceImpl for InitHandler {
-    fn get_handle(&mut self, name: &str) -> Option<Handle> {
-        trace!("get handle: {name}");
+impl fioxa_rpc::registery::Service for InitHandler {
+    fn register<'a>(
+        &mut self,
+        req: fioxa_rpc::OwnedReader<'a, registry_capnp::register::Owned>,
+        mut req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        _res: fioxa_rpc::OwnedBuilder<'a, registry_capnp::register_resp::Owned>,
+        _res_handles: &'a mut fioxa_rpc::RPCHandleBuilder,
+    ) -> Result<(), ::capnp::Error> {
+        let name = req.get_name()?.to_str()?;
+        trace!("register: {name}");
+
+        let handle = req_handles.remove(req.get_handle()?.get_index() as usize);
         let mut shared = self.shared.lock();
-        let handle = shared.handles.get_mut(name)?;
-        Some(handle.clone())
+        let e = shared.handles.entry_ref(name).or_default();
+
+        while let Some(c) = e.single_waiters.pop() {
+            if let Err(e) = c.write(&[], &[*handle]) {
+                warn!("error sending {e:?}");
+            }
+        }
+
+        e.subscribers.retain(|c| {
+            if let Err(e) = c.write(&[], &[*handle]) {
+                warn!("error sending {e:?}");
+                return false;
+            }
+            true
+        });
+
+        e.sources.push(Arc::new(handle));
+        Ok(())
     }
 
-    fn publish_handle(&mut self, name: &str, handle: Handle) -> bool {
-        trace!("pub handle: {name}");
+    fn get<'a>(
+        &mut self,
+        req: fioxa_rpc::OwnedReader<'a, registry_capnp::get::Owned>,
+        _req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        res: fioxa_rpc::OwnedBuilder<'a, registry_capnp::get_resp::Owned>,
+        res_handles: &'a mut fioxa_rpc::RPCHandleBuilder<'static>,
+    ) -> Result<(), ::capnp::Error> {
+        let name = req.get_name()?.to_str()?;
+        trace!("get handle: {name}");
+
         let mut shared = self.shared.lock();
-        let old = shared.handles.insert(name.into(), handle);
-        old.is_some()
+        let entry = shared.handles.entry_ref(name).or_default();
+
+        match req.get_mode().which()? {
+            registry_capnp::get::mode::Which::Any(any) => {
+                if let Some(h) = entry.sources.first() {
+                    let e = res.init_entries(1);
+                    res_handles.add(e.get(0), h.clone());
+                } else if any.get_blocking() {
+                    let (l, r) = Channel::new();
+                    entry.single_waiters.push(r);
+                    res_handles.add(res.init_extra(), l.into_inner());
+                }
+            }
+            registry_capnp::get::mode::Which::Stream(cont) => {
+                let (l, r) = Channel::new();
+                res_handles.add(res.init_extra(), l.into_inner());
+                for s in &entry.sources {
+                    if let Err(e) = r.write(&[], &[***s]) {
+                        warn!("error sending {e:?}");
+                        break;
+                    }
+                }
+
+                if cont.get_continue() {
+                    entry.subscribers.push(r);
+                }
+            }
+        }
+
+        Ok(())
     }
 }

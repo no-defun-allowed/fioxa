@@ -6,11 +6,13 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+fioxa_rpc.workspace = true
 kernel_sys.workspace = true
 kernel_userspace.workspace = true
 userspace_slaballoc.workspace = true
 userspace.workspace = true
 
+capnp.workspace = true
 x86_64.workspace = true
 
 modular-bitfield = { version = "0.12", default-features = false }

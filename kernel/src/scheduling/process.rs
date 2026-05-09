@@ -140,7 +140,7 @@ impl ProcessReferences {
         Self(Slab::new())
     }
 
-    pub fn from_refs(refs_to_clone: &[Hid]) -> Self {
+    pub fn from_refs(refs_to_clone: impl Iterator<Item = Hid>) -> Self {
         let mut refs = ProcessReferences::new();
 
         unsafe {
@@ -149,7 +149,7 @@ impl ProcessReferences {
             for r in refs_to_clone {
                 refs.insert(
                     this_refs
-                        .get(*r)
+                        .get(r)
                         .expect("the references should belong to the calling process")
                         .clone(),
                 );

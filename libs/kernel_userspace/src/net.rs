@@ -1,34 +1,8 @@
 use core::fmt::Display;
 
-use kernel_sys::types::SyscallError;
-use rkyv::{
-    Archive, Deserialize, Serialize,
-    rancor::{Error, Source},
-    with::InlineAsBox,
-};
 use thiserror::Error;
 
-use crate::{
-    channel::Channel,
-    ipc::{CowAsOwned, IPCChannel},
-};
-
-#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
-pub enum PhysicalNet<'a> {
-    MacAddrGet,
-    SendPacket(Slice<'a>),
-    ListenToPackets(CowAsOwned<'a, Channel>),
-}
-
-#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
-pub struct Slice<'a>(#[rkyv(with = InlineAsBox)] pub &'a [u8]);
-
-#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
-pub enum Networking {
-    ArpRequest(IPAddr),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Archive, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IPAddr {
     V4(u8, u8, u8, u8),
 }
@@ -41,7 +15,7 @@ impl Display for IPAddr {
     }
 }
 
-#[derive(Debug, Clone, Error, Archive, Serialize, Deserialize)]
+#[derive(Debug, Clone, Error)]
 #[error("ips not in same subnet a: `{a}`, b: `{b}` with subnet of `{subnet:#X}`")]
 pub struct NotSameSubnetError {
     a: IPAddr,
@@ -84,125 +58,6 @@ impl IPAddr {
                     })
                 }
             }
-        }
-    }
-}
-
-pub struct NetworkInterfaceService(IPCChannel);
-
-impl NetworkInterfaceService {
-    pub fn from_channel(chan: IPCChannel) -> Self {
-        Self(chan)
-    }
-
-    pub fn mac_address(&mut self) -> u64 {
-        self.0.send(&PhysicalNet::MacAddrGet).unwrap();
-        self.0.recv().unwrap().deserialize().unwrap()
-    }
-
-    pub fn send_packet(&mut self, packet: &[u8]) {
-        self.0
-            .send(&PhysicalNet::SendPacket(Slice(packet)))
-            .unwrap();
-        self.0.recv().unwrap().deserialize().unwrap()
-    }
-
-    pub fn listen_to_packets(&mut self, chan: Channel) {
-        self.0
-            .send(&PhysicalNet::ListenToPackets(CowAsOwned(
-                alloc::borrow::Cow::Owned(chan),
-            )))
-            .unwrap();
-        self.0.recv().unwrap().deserialize().unwrap()
-    }
-}
-
-pub struct NetworkInterfaceServiceExecutor<I: NetworkInterfaceServiceImpl> {
-    channel: IPCChannel,
-    service: I,
-}
-
-impl<I: NetworkInterfaceServiceImpl> NetworkInterfaceServiceExecutor<I> {
-    pub fn new(channel: IPCChannel, service: I) -> Self {
-        Self { channel, service }
-    }
-
-    pub fn run(&mut self) -> Result<(), Error> {
-        loop {
-            let mut msg = match self.channel.recv() {
-                Ok(m) => m,
-                Err(SyscallError::ChannelClosed) => return Ok(()),
-                Err(e) => return Err(Error::new(e)),
-            };
-            let (msg, des) = msg.access::<ArchivedPhysicalNet>()?;
-
-            let err = match msg {
-                ArchivedPhysicalNet::MacAddrGet => self.channel.send(&self.service.mac_address()),
-                ArchivedPhysicalNet::SendPacket(packet) => {
-                    self.service.send_packet(&packet.0);
-                    self.channel.send(&())
-                }
-                ArchivedPhysicalNet::ListenToPackets(channel) => {
-                    self.service.listen_to_packets(channel.0.deserialize(des)?);
-                    self.channel.send(&())
-                }
-            };
-            err.map_err(Error::new)?;
-        }
-    }
-}
-
-pub trait NetworkInterfaceServiceImpl {
-    fn mac_address(&mut self) -> u64;
-
-    fn send_packet(&mut self, packet: &[u8]);
-
-    fn listen_to_packets(&mut self, channel: Channel);
-}
-
-pub struct NetService(IPCChannel);
-
-impl NetService {
-    pub fn from_channel(channel: IPCChannel) -> Self {
-        Self(channel)
-    }
-
-    pub fn arp_request(&mut self, ip: IPAddr) -> Result<Option<u64>, NotSameSubnetError> {
-        self.0.send(&Networking::ArpRequest(ip)).unwrap();
-        self.0.recv().unwrap().deserialize().unwrap()
-    }
-}
-
-pub trait NetServiceImpl {
-    fn arp_request(&mut self, ip: IPAddr) -> Result<Option<u64>, NotSameSubnetError>;
-}
-
-pub struct NetServiceExecutor<I: NetServiceImpl> {
-    channel: IPCChannel,
-    service: I,
-}
-
-impl<I: NetServiceImpl> NetServiceExecutor<I> {
-    pub fn new(channel: IPCChannel, service: I) -> Self {
-        Self { channel, service }
-    }
-
-    pub fn run(&mut self) -> Result<(), Error> {
-        loop {
-            let mut msg = match self.channel.recv() {
-                Ok(m) => m,
-                Err(SyscallError::ChannelClosed) => return Ok(()),
-                Err(e) => return Err(Error::new(e)),
-            };
-            let (msg, des) = msg.access::<ArchivedNetworking>()?;
-
-            let err = match msg {
-                ArchivedNetworking::ArpRequest(ip) => {
-                    let res = self.service.arp_request(ip.deserialize(des)?);
-                    self.channel.send(&res)
-                }
-            };
-            err.map_err(Error::new)?;
         }
     }
 }

@@ -10,6 +10,7 @@ edition = "2024"
 console = []
 
 [dependencies]
+fioxa_rpc.workspace = true
 kernel_userspace.workspace = true
 
 spin.workspace = true

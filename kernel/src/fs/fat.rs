@@ -10,19 +10,16 @@ use alloc::{
     collections::BTreeMap,
     string::{String, ToString},
     sync::Arc,
-    vec::Vec,
 };
+use fioxa_rpc::{fs_capnp, server::RPCServer, service::ServiceExecutor};
 use hashbrown::HashMap;
 use kernel_sys::syscall::sys_process_spawn_thread;
-use kernel_userspace::{
-    channel::Channel,
-    fs::{FSControllerService, FSFile, FSFileId, FSFileType, FSServiceExecutor, FSServiceImpl},
-    ipc::IPCChannel,
-    mutex::Mutex,
-    service::ServiceExecutor,
-};
+use kernel_userspace::{channel::Channel, handle::Handle, mutex::Mutex};
 
 use crate::fs::FSPartitionDisk;
+
+#[derive(Debug, Clone, Copy, Ord, PartialEq, PartialOrd, Eq, Hash)]
+pub struct FSFileId(u64);
 
 pub const ROOT_FILE_ID: FSFileId = FSFileId(0);
 
@@ -129,13 +126,13 @@ pub fn next_file_id() -> FSFileId {
     FSFileId(id)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct FATFile {
     cluster: u32,
     entry_type: FATFileType,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum FATFileType {
     Folder,
     // Filesize
@@ -197,8 +194,10 @@ impl FAT {
         let fat_buffer = match self.cluster_chain_buffer.get(&fat_buf_offset) {
             Some(b) => b,
             None => {
-                let buf = self.disk.read(fat_buf_offset as u64, 1).into_boxed_slice();
-                self.cluster_chain_buffer.insert(fat_buf_offset, buf);
+                let buf = self.disk.read(fat_buf_offset as u64, 1);
+                let mut buf = buf.get_reply().unwrap();
+                let buf = buf.get_message().unwrap().get_data().unwrap();
+                self.cluster_chain_buffer.insert(fat_buf_offset, buf.into());
                 self.cluster_chain_buffer.get(&fat_buf_offset).unwrap()
             }
         };
@@ -223,10 +222,12 @@ impl FAT {
             for sector in
                 self.first_data_sector() - self.root_dir_sectors()..self.first_data_sector()
             {
-                let buffer = self.disk.read(sector as u64, 1);
+                let buf = self.disk.read(sector as u64, 1);
+                let mut buf = buf.get_reply().unwrap();
+                let buf = buf.get_message().unwrap().get_data().unwrap();
 
                 let directory_entry = unsafe {
-                    core::slice::from_raw_parts(buffer.as_ptr() as *const DirectoryEntry, 16)
+                    core::slice::from_raw_parts(buf.as_ptr() as *const DirectoryEntry, 16)
                 };
 
                 if self.parse_entries(directory_entry, &mut entries, &mut lfn_buf) {
@@ -235,15 +236,17 @@ impl FAT {
             }
             return entries;
         }
-        let sectors = self.bios_parameter_block.sectors_per_cluster as u64;
+        let sectors = self.bios_parameter_block.sectors_per_cluster as u32;
         let mut lfn_buf = String::new();
         while cluster > 0 {
             let sector = self.get_start_sector_of_cluster(cluster);
-            let buffer = self.disk.read(sector as u64, sectors);
+            let buf = self.disk.read(sector as u64, sectors);
+            let mut buf = buf.get_reply().unwrap();
+            let buf = buf.get_message().unwrap().get_data().unwrap();
 
             let directory_entry = unsafe {
                 core::slice::from_raw_parts(
-                    buffer.as_ptr() as *const DirectoryEntry,
+                    buf.as_ptr() as *const DirectoryEntry,
                     16 * sectors as usize,
                 )
             };
@@ -377,7 +380,9 @@ pub fn get_fat_type(bpb: &BiosParameterBlock) -> FatType {
 }
 
 pub fn read_bios_block(disk: FSPartitionDisk) {
-    let buffer = disk.read(0, 1);
+    let buf = disk.read(0, 1);
+    let mut buf = buf.get_reply().unwrap();
+    let buffer = buf.get_message().unwrap().get_data().unwrap();
 
     let bios_parameter_block = unsafe { *(buffer.as_ptr() as *const BiosParameterBlock) };
 
@@ -428,19 +433,16 @@ pub fn read_bios_block(disk: FSPartitionDisk) {
         }
     };
 
-    let fat = ArcFat(Arc::new(Mutex::new(fat)));
+    let fat = Arc::new(Mutex::new(fat));
+    let cache = Arc::new(Mutex::new(HashMap::new()));
+    let ccache: ChildrenCache = Default::default();
 
-    let (chan, client) = Channel::new();
-    {
-        let mut fs_controller =
-            FSControllerService::from_channel(IPCChannel::connect("FS_CONTROLLER"));
-        fs_controller.register_filesystem(client);
-    }
-
-    ServiceExecutor::from_channel(chan, |c| {
+    ServiceExecutor::with_name("FS", |chan| {
         let fat = fat.clone();
+        let cache = cache.clone();
+        let ccache = ccache.clone();
         sys_process_spawn_thread(move || {
-            FSServiceExecutor::new(IPCChannel::from_channel(c), fat)
+            RPCServer::new(chan, FatFolder(fat, cache, ROOT_FILE_ID, ccache))
                 .run()
                 .unwrap();
         });
@@ -449,71 +451,172 @@ pub fn read_bios_block(disk: FSPartitionDisk) {
     .unwrap();
 }
 
+type FatCache = Arc<Mutex<HashMap<FSFileId, (Arc<Handle>, fs_capnp::FileType)>>>;
+type ChildrenCache = Arc<Mutex<HashMap<FSFileId, HashMap<String, FSFileId>>>>;
+
 #[derive(Clone)]
+struct FatFolder(Arc<Mutex<FAT>>, FatCache, FSFileId, ChildrenCache);
 
-struct ArcFat(Arc<Mutex<FAT>>);
+impl fioxa_rpc::fs::FolderService for FatFolder {
+    fn get_children<'a>(
+        &mut self,
+        _req: fioxa_rpc::OwnedReader<'a, fs_capnp::folder_get_children::Owned>,
+        _req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        res: fioxa_rpc::OwnedBuilder<'a, fs_capnp::folder_got_children::Owned>,
+        _res_handles: &'a mut fioxa_rpc::RPCHandleBuilder<'static>,
+    ) -> Result<(), ::capnp::Error> {
+        let mut fat = self.0.lock();
+        let mut cc = self.3.lock();
+        let children = cc.entry(self.2).or_insert_with(|| {
+            let file = *fat.file_id_lookup.get(&self.2).unwrap();
+            match file.entry_type {
+                FATFileType::Folder => fat.read_directory(file.cluster, self.2 == ROOT_FILE_ID),
+                FATFileType::File(_) => panic!(),
+            }
+        });
 
-impl FSServiceImpl for ArcFat {
-    fn stat_root(&mut self) -> FSFile {
-        self.0.lock().stat_root()
+        let mut children_build = res.init_entries(children.len() as u32);
+        for (i, c) in children.iter().enumerate() {
+            let mut b = children_build.reborrow().get(i as u32);
+            b.set_name(c.0);
+
+            let file = fat.file_id_lookup.get(c.1).unwrap();
+            let ty = match file.entry_type {
+                FATFileType::Folder => fs_capnp::FileType::Folder,
+                FATFileType::File(_) => fs_capnp::FileType::File,
+            };
+            b.set_type(ty);
+        }
+
+        Ok(())
     }
 
-    fn stat_by_id(&mut self, file: FSFileId) -> Option<FSFile> {
-        self.0.lock().stat_by_id(file)
-    }
+    fn open<'a>(
+        &mut self,
+        req: fioxa_rpc::OwnedReader<'a, fs_capnp::folder_open::Owned>,
+        _req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        mut res: fioxa_rpc::OwnedBuilder<'a, fs_capnp::folder_opened::Owned>,
+        res_handles: &'a mut fioxa_rpc::RPCHandleBuilder<'static>,
+    ) -> Result<(), ::capnp::Error> {
+        let name = req.get_name()?.to_str()?;
 
-    fn get_children(&mut self, file: FSFileId) -> Option<HashMap<String, FSFileId>> {
-        self.0.lock().get_children(file)
-    }
+        let mut fat = self.0.lock();
+        let mut cc = self.3.lock();
+        let children = cc.entry(self.2).or_insert_with(|| {
+            let file = *fat.file_id_lookup.get(&self.2).unwrap();
+            match file.entry_type {
+                FATFileType::Folder => fat.read_directory(file.cluster, self.2 == ROOT_FILE_ID),
+                FATFileType::File(_) => panic!(),
+            }
+        });
 
-    fn read_file(&mut self, file: FSFileId, offset: usize, len: usize) -> Option<Vec<u8>> {
-        self.0.lock().read_file(file, offset, len)
+        match children.get(name) {
+            Some(&id) => {
+                let mut cache = self.1.lock();
+                let (handle, ty) = cache
+                    .entry(id)
+                    .or_insert_with(|| {
+                        let (l, r) = Channel::new();
+
+                        let file = *fat.file_id_lookup.get(&id).unwrap();
+                        let ty = match file.entry_type {
+                            FATFileType::Folder => {
+                                let fat = self.0.clone();
+                                let cache = self.1.clone();
+                                let ccache = self.3.clone();
+                                sys_process_spawn_thread(move || {
+                                    ServiceExecutor::from_channel(r, |chan| {
+                                        let fat = fat.clone();
+                                        let cache = cache.clone();
+                                        let ccache = ccache.clone();
+                                        sys_process_spawn_thread(move || {
+                                            RPCServer::new(chan, FatFolder(fat, cache, id, ccache))
+                                                .run()
+                                                .unwrap();
+                                        });
+                                    })
+                                    .run()
+                                    .unwrap();
+                                });
+                                fs_capnp::FileType::Folder
+                            }
+                            FATFileType::File(_) => {
+                                let fat = self.0.clone();
+                                sys_process_spawn_thread(move || {
+                                    ServiceExecutor::from_channel(r, |chan| {
+                                        let fat = fat.clone();
+                                        sys_process_spawn_thread(move || {
+                                            RPCServer::new(chan, FatFile(fat, file)).run().unwrap();
+                                        });
+                                    })
+                                    .run()
+                                    .unwrap();
+                                });
+                                fs_capnp::FileType::File
+                            }
+                        };
+
+                        (l.into_inner().into(), ty)
+                    })
+                    .clone();
+
+                res.set_type(ty);
+                res_handles.add(res.init_capability(), handle);
+            }
+            None => res.set_type(fs_capnp::FileType::None),
+        }
+
+        Ok(())
     }
 }
 
-impl FSServiceImpl for FAT {
-    fn stat_root(&mut self) -> FSFile {
-        self.stat_by_id(ROOT_FILE_ID).unwrap()
-    }
+#[derive(Clone)]
+struct FatFile(Arc<Mutex<FAT>>, FATFile);
 
-    fn stat_by_id(&mut self, file_id: FSFileId) -> Option<FSFile> {
-        let file = self.file_id_lookup.get(&file_id)?.clone();
-        let ty = match file.entry_type {
-            FATFileType::Folder => FSFileType::Folder,
-            FATFileType::File(size) => FSFileType::File {
-                length: size as usize,
-            },
-        };
-        Some(FSFile {
-            id: file_id,
-            file: ty,
-        })
-    }
-
-    fn get_children(&mut self, file_id: FSFileId) -> Option<hashbrown::HashMap<String, FSFileId>> {
-        let file = self.file_id_lookup.get(&file_id)?.clone();
-        match file.entry_type {
-            FATFileType::Folder => Some(self.read_directory(file.cluster, file_id == ROOT_FILE_ID)),
-            FATFileType::File(_) => None,
+impl FatFile {
+    fn fat_size(&self) -> u32 {
+        match self.1.entry_type {
+            FATFileType::Folder => panic!(),
+            FATFileType::File(s) => s,
         }
     }
+}
 
-    fn read_file(&mut self, file: FSFileId, offset: usize, len: usize) -> Option<Vec<u8>> {
-        let fat_file = self.file_id_lookup.get(&file)?;
-        let FATFileType::File(file_length) = fat_file.entry_type else {
-            return None;
-        };
+impl fioxa_rpc::fs::FileService for FatFile {
+    fn size<'a>(
+        &mut self,
+        _req: fioxa_rpc::OwnedReader<'a, fs_capnp::file_size::Owned>,
+        _req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        mut res: fioxa_rpc::OwnedBuilder<'a, fs_capnp::file_size_read::Owned>,
+        _res_handles: &'a mut fioxa_rpc::RPCHandleBuilder<'static>,
+    ) -> Result<(), ::capnp::Error> {
+        res.set_size(self.fat_size() as u64);
+        Ok(())
+    }
 
+    fn read<'a>(
+        &mut self,
+        req: fioxa_rpc::OwnedReader<'a, fs_capnp::file_read::Owned>,
+        _req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        res: fioxa_rpc::OwnedBuilder<'a, fs_capnp::file_data::Owned>,
+        _res_handles: &'a mut fioxa_rpc::RPCHandleBuilder<'static>,
+    ) -> Result<(), ::capnp::Error> {
+        let offset = req.get_offset() as usize;
+        let len = req.get_len() as usize;
+        let file_length = self.fat_size();
         if offset >= file_length as usize {
-            return Some(vec![]);
+            return Ok(());
         }
 
         // set len to be as much as it can
         let len = len.min(file_length as usize - offset);
 
-        let mut res: Vec<u8> = Vec::with_capacity(len);
+        let output = res.init_data(len as u32);
+        let mut output_idx = 0;
 
-        let sectors_per_cluster = self.bios_parameter_block.sectors_per_cluster as u32;
+        let mut fat = self.0.lock();
+
+        let sectors_per_cluster = fat.bios_parameter_block.sectors_per_cluster as u32;
 
         struct State {
             cluster: u32,
@@ -522,12 +625,12 @@ impl FSServiceImpl for FAT {
         }
 
         let mut state = State {
-            cluster: fat_file.cluster,
-            sector: self.get_start_sector_of_cluster(fat_file.cluster),
+            cluster: self.1.cluster,
+            sector: fat.get_start_sector_of_cluster(self.1.cluster),
             avail: sectors_per_cluster,
         };
 
-        let consume = |this: &mut Self, state: &mut State, cnt| {
+        let consume = |this: &mut FAT, state: &mut State, cnt| {
             state.sector += cnt;
             state.avail -= cnt;
 
@@ -542,15 +645,19 @@ impl FSServiceImpl for FAT {
         while start_sectors > 0 {
             let min = start_sectors.min(state.avail);
             start_sectors -= min;
-            consume(self, &mut state, min);
+            consume(&mut fat, &mut state, min);
         }
 
         // align
         let start_bits = offset as u32 % 512;
         let mut to_read = len;
         if start_bits > 0 {
-            res.extend(&self.disk.read(state.sector as u64, 1)[(512 - start_bits) as usize..]);
-            consume(self, &mut state, 1);
+            let r = fat.disk.read(state.sector as u64, 1);
+            let mut r = r.get_reply().unwrap();
+            let d = &r.get_message().unwrap().get_data().unwrap()[(512 - start_bits) as usize..];
+            output[0..start_bits as usize].copy_from_slice(d);
+            output_idx = start_bits as usize;
+            consume(&mut fat, &mut state, 1);
             to_read -= start_bits as usize;
         }
 
@@ -558,12 +665,15 @@ impl FSServiceImpl for FAT {
             let max_sectors = to_read.div_ceil(512);
             let read_amount = state.avail.min(max_sectors as u32);
             let read_amount_bytes = (read_amount as usize * 512).min(to_read);
-            let read = self.disk.read(state.sector as u64, read_amount as u64);
-            res.extend(&read[0..read_amount_bytes]);
-            consume(self, &mut state, read_amount);
+            let r = fat.disk.read(state.sector as u64, read_amount);
+            let mut r = r.get_reply().unwrap();
+            let d = &r.get_message().unwrap().get_data().unwrap()[0..read_amount_bytes];
+            output[output_idx..output_idx + read_amount_bytes].copy_from_slice(d);
+            output_idx += read_amount_bytes;
+            consume(&mut fat, &mut state, read_amount);
             to_read -= read_amount_bytes;
         }
 
-        Some(res)
+        Ok(())
     }
 }

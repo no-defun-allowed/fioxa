@@ -1,6 +1,7 @@
 use core::fmt::Write;
 
 use alloc::{string::String, vec::Vec};
+use fioxa_rpc::service::get_and_connect_service;
 use input::keyboard::{
     KeyboardEvent,
     virtual_code::{Modifier, VirtualKeyCode},
@@ -14,7 +15,6 @@ use kernel_userspace::{
     handle::{FIRST_HANDLE, Handle},
     input::InputServiceMessage,
     process::ProcessHandle,
-    service::Service,
 };
 
 use crate::{
@@ -41,7 +41,7 @@ pub fn run_console() {
         }
     });
 
-    let keyboard = Service::get_by_name("INPUT:KB").connect().unwrap();
+    let keyboard = get_and_connect_service("INPUT:KB").unwrap();
 
     let mut kb_decoder = KBInputDecoder::new();
 
@@ -49,12 +49,15 @@ pub fn run_console() {
         loop {
             let proc = load_elf(early_bootfs_get("terminal").unwrap())
                 .unwrap()
-                .references(ProcessReferences::from_refs(&[
-                    FIRST_HANDLE,
-                    **cin.handle(),
-                    **cout.handle(),
-                    **cout.handle(),
-                ]))
+                .references(ProcessReferences::from_refs(
+                    [
+                        FIRST_HANDLE,
+                        **cin.handle(),
+                        **cout.handle(),
+                        **cout.handle(),
+                    ]
+                    .into_iter(),
+                ))
                 .build();
 
             let mut proc = unsafe {

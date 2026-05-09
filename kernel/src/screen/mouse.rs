@@ -1,4 +1,5 @@
-use kernel_userspace::{input::InputServiceMessage, service::Service};
+use fioxa_rpc::service::get_and_connect_service;
+use kernel_userspace::input::InputServiceMessage;
 
 use input::mouse::MousePacket;
 
@@ -26,7 +27,7 @@ pub const MOUSE_POINTER: &[u16; 16] = &[
 ];
 
 pub fn monitor_cursor_task() {
-    let mouse = Service::get_by_name("INPUT:MOUSE").connect().unwrap();
+    let mouse = get_and_connect_service("INPUT:MOUSE").unwrap();
 
     let mut mouse_pos: Pos = Pos { x: 0, y: 0 };
 

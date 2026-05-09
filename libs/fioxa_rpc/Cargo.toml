@@ -1,0 +1,13 @@
+[package]
+name = "fioxa_rpc"
+version = "0.1.0"
+edition.workspace = true
+
+[build-dependencies]
+capnpc = "0.25.3"
+
+[dependencies]
+kernel_userspace.workspace = true
+
+capnp = { version = "0.25.3", default-features = false, features = ["alloc"] }
+numeric-sort.workspace = true

@@ -18,6 +18,3 @@ num-traits.workspace = true
 numeric-sort.workspace = true
 spin.workspace = true
 thiserror.workspace = true
-
-bytecheck = "0.8.1"
-rkyv = { version = "0.8.10", default-features = false, features = ["alloc", "bytecheck", "hashbrown-0_15"] }

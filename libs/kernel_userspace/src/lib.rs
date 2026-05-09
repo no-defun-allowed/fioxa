@@ -7,23 +7,18 @@ pub mod channel;
 pub mod condvar;
 pub mod disk;
 pub mod elf;
-pub mod fs;
 pub mod handle;
 pub mod input;
 pub mod interrupt;
-pub mod ipc;
 pub mod message;
 pub mod mutex;
 pub mod net;
-pub mod pci;
 pub mod port;
 pub mod process;
 pub mod semaphore;
-pub mod service;
 pub mod vm;
 
 pub use kernel_sys as sys;
-pub use rkyv;
 
 use core::time::Duration;
 

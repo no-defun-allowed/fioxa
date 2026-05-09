@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["calc", "net", "terminal", "test"]
+members = ["calc", "net", "terminal", "test", "test_capnp"]
 
 [workspace.package]
 edition = "2024"
@@ -10,5 +10,7 @@ kernel_sys = { path = "../libs/kernel_sys" }
 kernel_userspace = { path = "../libs/kernel_userspace" }
 userspace = { path = "../libs/userspace", features = ["console"] }
 userspace_slaballoc = { path = "../libs/userspace_slaballoc" }
+fioxa_rpc = { path = "../libs/fioxa_rpc" }
 
+capnp = { version = "0.25.3", default-features = false, features = ["alloc"] }
 numeric-sort = "0.1.5"

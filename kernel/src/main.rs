@@ -19,7 +19,7 @@ use kernel::bootfs::{early_bootfs_get, serve_bootfs};
 use kernel::console::run_console;
 use kernel::cpu_localstorage::{CPULocalStorageRW, init_bsp_boot_ls, init_bsp_localstorage};
 use kernel::elf::load_elf;
-use kernel::fs::{disk_controller, file_system_partition_loader, fs_controller};
+use kernel::fs::file_system_partition_loader;
 use kernel::interrupts::{self, check_interrupts};
 
 use kernel::ioapic::{Madt, enable_apic};
@@ -251,7 +251,7 @@ extern "C" fn init() {
 
     let init_handle = serve_init_service();
 
-    let init = ProcessReferences::from_refs(&[**init_handle.handle()]);
+    let init = ProcessReferences::from_refs(core::iter::once(**init_handle.handle()));
 
     spawn_process(run_console).references(init.clone()).build();
 
@@ -276,14 +276,6 @@ extern "C" fn init() {
         .build();
 
     spawn_process(serial_monitor_stdin)
-        .references(init.clone())
-        .build();
-
-    spawn_process(disk_controller)
-        .references(init.clone())
-        .build();
-
-    spawn_process(fs_controller)
         .references(init.clone())
         .build();
 

@@ -1,4 +1,3 @@
-use bytecheck::CheckBytes;
 use kernel_sys::{
     syscall::{
         sys_interrupt_acknowledge, sys_interrupt_create, sys_interrupt_set_port,
@@ -6,14 +5,10 @@ use kernel_sys::{
     },
     types::SyscallError,
 };
-use rkyv::{
-    Archive, Deserialize, Portable, Serialize,
-    rancor::{Error, Source},
-};
 
-use crate::{handle::Handle, ipc::IPCChannel, port::Port};
+use crate::{handle::Handle, port::Port};
 
-#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Interrupt(Handle);
 
 impl Default for Interrupt {
@@ -54,57 +49,5 @@ impl Interrupt {
 
     pub fn set_port(&self, port: &Port, key: u64) -> Result<(), SyscallError> {
         sys_interrupt_set_port(*self.0, **port.handle(), key)
-    }
-}
-
-#[derive(Debug, Clone, Copy, Archive, Serialize, Deserialize, Portable, CheckBytes)]
-#[repr(u8)]
-pub enum InterruptVector {
-    Keyboard,
-    Mouse,
-    PCI,
-    COM1,
-}
-
-pub struct InterruptsService(IPCChannel);
-
-impl InterruptsService {
-    pub fn from_channel(channel: IPCChannel) -> Self {
-        Self(channel)
-    }
-
-    pub fn get_interrupt(&mut self, vector: InterruptVector) -> Option<Interrupt> {
-        self.0.send(&vector).unwrap();
-        self.0.recv().unwrap().deserialize().unwrap()
-    }
-}
-
-pub struct InterruptsServiceExecutor<I: InterruptsServiceImpl> {
-    channel: IPCChannel,
-    service: I,
-}
-
-pub trait InterruptsServiceImpl {
-    fn get_interrupt(&mut self, vector: InterruptVector) -> Option<Interrupt>;
-}
-
-impl<I: InterruptsServiceImpl> InterruptsServiceExecutor<I> {
-    pub fn new(channel: IPCChannel, service: I) -> Self {
-        Self { channel, service }
-    }
-
-    pub fn run(&mut self) -> Result<(), Error> {
-        loop {
-            let mut msg = match self.channel.recv() {
-                Ok(m) => m,
-                Err(SyscallError::ChannelClosed) => return Ok(()),
-                Err(e) => return Err(Error::new(e)),
-            };
-
-            let (vector, _) = msg.access::<InterruptVector>()?;
-
-            let res = self.service.get_interrupt(*vector);
-            self.channel.send(&res).map_err(Error::new)?;
-        }
     }
 }

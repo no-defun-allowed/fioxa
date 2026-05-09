@@ -4,24 +4,25 @@ use core::{
 };
 
 use alloc::{sync::Arc, vec::Vec};
+use fioxa_rpc::{
+    RPCHandleBuilder,
+    client::RPCClient,
+    net_capnp,
+    server::RPCServer,
+    service::{ServiceExecutor, get_and_connect_service},
+};
 use kernel_sys::syscall::sys_process_spawn_thread;
 use kernel_userspace::{
     channel::Channel,
-    ipc::IPCChannel,
     mutex::Mutex,
-    net::{
-        IPAddr, NetServiceExecutor, NetServiceImpl, NetworkInterfaceService, NotSameSubnetError,
-    },
-    service::ServiceExecutor,
+    net::{IPAddr, NotSameSubnetError},
 };
 use modular_bitfield::{bitfield, specifiers::B48};
 
 use crate::{
-    net::arp::{ARP, ARP_TABLE},
+    net::arp::{ARP, ARP_TABLE, ARPEth},
     scheduling::with_held_interrupts,
 };
-
-use super::arp::ARPEth;
 
 #[bitfield]
 #[derive(Clone, Copy)]
@@ -71,7 +72,7 @@ const IP_ADDR: IPAddr = IPAddr::V4(10, 0, 2, 15);
 const SUBNET: u32 = 0xFF0000;
 
 pub fn send_arp(
-    service: &mut NetworkInterfaceService,
+    service: &mut RPCClient<fioxa_rpc::net_capnp::EthMessage>,
     mac_addr: u64,
     ip: IPAddr,
 ) -> Result<(), NotSameSubnetError> {
@@ -94,34 +95,38 @@ pub fn send_arp(
     let arp_req = ARPEth { header, arp };
     let buf = unsafe { &transmute::<ARPEth, [u8; size_of::<ARPEth>()]>(arp_req) };
 
-    service.send_packet(buf);
-
+    let mut req = fioxa_rpc::net::SendPacket::new_req();
+    req.init().set_packet(buf);
+    service.send(&req.build()).unwrap();
     Ok(())
 }
 
 pub fn userspace_networking_main() {
-    let mut pcnet = NetworkInterfaceService::from_channel(IPCChannel::connect("PCNET"));
+    let eth = get_and_connect_service("ETHERNET").unwrap();
+    let mut eth = RPCClient::new(eth);
 
-    let mac = pcnet.mac_address();
+    let mut req = fioxa_rpc::net::GetMac::new_req();
+    req.init();
+    let resp = eth.send(&req.build()).unwrap();
+    let mac = resp.get_reply().unwrap().get_message().unwrap().get_val();
 
     let (listen_chan, listen_chan_right) = Channel::new();
 
-    pcnet.listen_to_packets(listen_chan_right);
+    let mut req = fioxa_rpc::net::ListenToPackets::new_req();
+    let mut handles = RPCHandleBuilder::new();
+    handles.add(req.init().init_channel(), listen_chan_right.into_inner());
+
+    eth.send(&req.build_handles(&handles)).unwrap();
 
     sys_process_spawn_thread(move || monitor_packets(listen_chan));
 
-    let pcnet = Arc::new(Mutex::new(pcnet));
+    let pcnet = Arc::new(Mutex::new(eth));
 
     ServiceExecutor::with_name("NETWORKING", |chan| {
         let network = pcnet.clone();
 
         sys_process_spawn_thread(move || {
-            match NetServiceExecutor::new(
-                IPCChannel::from_channel(chan),
-                NetHandler { mac, network },
-            )
-            .run()
-            {
+            match RPCServer::new(chan, NetHandler { mac, network }).run() {
                 Ok(()) => (),
                 Err(e) => error!("Error running service: {e}"),
             }
@@ -133,17 +138,33 @@ pub fn userspace_networking_main() {
 
 struct NetHandler {
     mac: u64,
-    network: Arc<Mutex<NetworkInterfaceService>>,
+    network: Arc<Mutex<RPCClient<fioxa_rpc::net_capnp::EthMessage>>>,
 }
 
-impl NetServiceImpl for NetHandler {
-    fn arp_request(&mut self, ip: IPAddr) -> Result<Option<u64>, NotSameSubnetError> {
+impl fioxa_rpc::net::NetService for NetHandler {
+    fn arp_request<'a>(
+        &mut self,
+        req: fioxa_rpc::OwnedReader<'a, net_capnp::arp_request::Owned>,
+        _req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        mut res: fioxa_rpc::OwnedBuilder<'a, net_capnp::arp_reponse::Owned>,
+        _res_handles: &'a mut fioxa_rpc::RPCHandleBuilder,
+    ) -> Result<(), ::capnp::Error> {
+        let ip = IPAddr::ipv4_addr_from_net(req.get_ip());
         let mac_addr = ARP_TABLE.lock().get(&ip).cloned();
 
         match mac_addr {
-            Some(mac) => Ok(Some(mac)),
-            None => send_arp(&mut self.network.lock(), self.mac, ip).map(|()| None),
+            Some(mac) => {
+                res.set_success(net_capnp::arp_reponse::ArpSuccess::Success);
+                res.set_mac(mac);
+            }
+            None => match send_arp(&mut self.network.lock(), self.mac, ip) {
+                Ok(()) => res.set_success(net_capnp::arp_reponse::ArpSuccess::Unknown),
+                Err(NotSameSubnetError { .. }) => {
+                    res.set_success(net_capnp::arp_reponse::ArpSuccess::NotSameSubnet)
+                }
+            },
         }
+        Ok(())
     }
 }
 

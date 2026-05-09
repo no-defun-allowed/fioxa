@@ -1,0 +1,54 @@
+@0xa1515e7204ddd567;
+
+using Rpc = import "rpc.capnp";
+
+enum FolderMessage {
+    getChildren @0;
+    open @1;
+}
+
+enum FileMessage {
+    size @0;
+    read @1;
+}
+
+enum FileType {
+    none @0;
+    file @1;
+    folder @2;
+}
+
+struct FolderGetChildren {}
+
+struct FolderGotChildren {
+    struct Entry {
+        name @0 :Text;
+        type @1 :FileType;
+    }
+    entries @0 :List(Entry);
+}
+
+struct FolderOpen {
+    name @0 :Text;
+}
+
+struct FolderOpened {
+    type @0 :FileType;
+    capability @1 :Rpc.HandleIndex;
+}
+
+struct FileSize {}
+
+struct FileSizeRead {
+    size @0 :UInt64;
+}
+
+struct FileRead {
+    offset @0 :UInt64;
+    len @1 :UInt32;
+}
+
+struct FileData {
+    data @0 :Data;
+}
+

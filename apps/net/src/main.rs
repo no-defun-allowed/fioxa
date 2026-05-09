@@ -1,10 +1,8 @@
 #![no_std]
 #![no_main]
 
-use kernel_userspace::{
-    ipc::IPCChannel,
-    net::{IPAddr, NetService},
-};
+use fioxa_rpc::{client::RPCClient, service::get_and_connect_service};
+use kernel_userspace::net::IPAddr;
 use userspace::ARGS;
 
 extern crate alloc;
@@ -24,22 +22,36 @@ pub fn main() {
 
     match cmd.to_uppercase().as_str() {
         "ARP" => {
-            let mut networking = NetService::from_channel(IPCChannel::connect("NETWORKING"));
-
             let mut ip = args.next().unwrap().split('.');
             let a = ip.next().unwrap();
             let b = ip.next().unwrap();
             let c = ip.next().unwrap();
             let d = ip.next().unwrap();
-            match networking.arp_request(IPAddr::V4(
+            let ip = IPAddr::V4(
                 a.parse().unwrap(),
                 b.parse().unwrap(),
                 c.parse().unwrap(),
                 d.parse().unwrap(),
-            )) {
-                Ok(Some(mac)) => println!("{a}.{b}.{c}.{d} = {mac:#X?}"),
-                Ok(None) => println!("pending answer, try again later"),
-                Err(e) => println!("Failed to lookup arp because: {e}"),
+            );
+
+            let networking = get_and_connect_service("NETWORKING").unwrap();
+            let mut networking = RPCClient::new(networking);
+
+            let mut req = fioxa_rpc::net::ArpRequest::new_req();
+            req.init().set_ip(ip.as_net_be());
+            let r = networking.send(&req.build()).unwrap();
+            let mut r = r.get_reply().unwrap();
+            let r = r.get_message().unwrap();
+            match r.get_success().unwrap() {
+                fioxa_rpc::net_capnp::arp_reponse::ArpSuccess::Success => {
+                    println!("{a}.{b}.{c}.{d} = {:#X?}", r.get_mac());
+                }
+                fioxa_rpc::net_capnp::arp_reponse::ArpSuccess::NotSameSubnet => {
+                    println!("error: NotSameSubnet");
+                }
+                fioxa_rpc::net_capnp::arp_reponse::ArpSuccess::Unknown => {
+                    println!("pending answer, try again later");
+                }
             }
         }
         _ => println!("Unknown cmd"),

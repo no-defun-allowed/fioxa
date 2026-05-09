@@ -11,6 +11,15 @@ pub mod bitfields;
 use core::{iter::Cycle, mem::size_of, ops::Range, ptr::null_mut, slice};
 
 use alloc::{sync::Arc, vec::Vec};
+use fioxa_rpc::{
+    RPCHandles,
+    client::RPCClient,
+    interrupt::InterruptClient,
+    net_capnp,
+    pci::{PCIDevice, PCIHeaderCommon},
+    server::RPCServer,
+    service::ServiceExecutor,
+};
 use kernel_sys::{
     syscall::{
         sys_handle_drop, sys_map, sys_process_spawn_thread, sys_vmo_anonymous_create,
@@ -18,16 +27,11 @@ use kernel_sys::{
     },
     types::{Hid, KernelObjectType, VMMapFlags, VMOAnonymousFlags},
 };
-use kernel_userspace::{
-    interrupt::InterruptsService,
-    mutex::Mutex,
-    net::{NetworkInterfaceServiceExecutor, NetworkInterfaceServiceImpl},
-    service::ServiceExecutor,
-};
+use kernel_userspace::mutex::Mutex;
 use userspace::log::{error, info};
 use x86_64::instructions::port::Port;
 
-use kernel_userspace::{channel::Channel, handle::Handle, ipc::IPCChannel, pci::PCIDevice};
+use kernel_userspace::{channel::Channel, handle::Handle};
 
 use self::bitfields::InitBlock;
 
@@ -61,16 +65,15 @@ pub fn main() {
         kernel_sys::syscall::sys_object_type(*pci_ref).unwrap(),
         KernelObjectType::Channel
     );
-    let pci_device = IPCChannel::from_channel(Channel::from_handle(pci_ref));
+    let pci_device = RPCClient::new(Channel::from_handle(pci_ref));
 
-    let pcnet = Arc::new(Mutex::new(PCNET::new(PCIDevice(pci_device)).unwrap()));
+    let pcnet = Arc::new(Mutex::new(PCNET::new(PCIDevice::new(pci_device)).unwrap()));
 
     sys_process_spawn_thread({
         let pcnet = pcnet.clone();
         move || {
-            let pci_ev = InterruptsService::from_channel(IPCChannel::connect("INTERRUPTS"))
-                .get_interrupt(kernel_userspace::interrupt::InterruptVector::PCI)
-                .unwrap();
+            let pci_ev =
+                InterruptClient::wellknown().subscribe(fioxa_rpc::interrupt_capnp::Vector::Pci);
 
             loop {
                 pci_ev.wait().unwrap();
@@ -79,16 +82,11 @@ pub fn main() {
         }
     });
 
-    ServiceExecutor::with_name("PCNET", |chan| {
+    ServiceExecutor::with_name("ETHERNET", |chan| {
         let pcnet = pcnet.clone();
 
         sys_process_spawn_thread(move || {
-            match NetworkInterfaceServiceExecutor::new(
-                IPCChannel::from_channel(chan),
-                NetworkInterface { pcnet },
-            )
-            .run()
-            {
+            match RPCServer::new(chan, NetworkInterface { pcnet }).run() {
                 Ok(()) => (),
                 Err(e) => error!("Error running service: {e}"),
             }
@@ -102,19 +100,50 @@ struct NetworkInterface<'a> {
     pcnet: Arc<Mutex<PCNET<'a>>>,
 }
 
-impl NetworkInterfaceServiceImpl for NetworkInterface<'_> {
-    fn mac_address(&mut self) -> u64 {
-        self.pcnet.lock().read_mac_addr()
+impl fioxa_rpc::net::EthService for NetworkInterface<'_> {
+    fn get_mac<'a>(
+        &mut self,
+        _req: fioxa_rpc::OwnedReader<'a, net_capnp::eth_get_mac::Owned>,
+        _req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        mut res: fioxa_rpc::OwnedBuilder<'a, net_capnp::mac_addr::Owned>,
+        _res_handles: &'a mut fioxa_rpc::RPCHandleBuilder,
+    ) -> Result<(), ::capnp::Error> {
+        res.set_val(self.pcnet.lock().read_mac_addr());
+        Ok(())
     }
 
-    fn send_packet(&mut self, packet: &[u8]) {
+    fn send_packet<'a>(
+        &mut self,
+        req: fioxa_rpc::OwnedReader<'a, net_capnp::eth_send_packet::Owned>,
+        _req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        _res: fioxa_rpc::OwnedBuilder<'a, net_capnp::empty::Owned>,
+        _res_handles: &'a mut fioxa_rpc::RPCHandleBuilder,
+    ) -> Result<(), ::capnp::Error> {
+        let packet = req.get_packet()?;
         while self.pcnet.lock().send_packet(packet).is_err() {
             sys_yield()
         }
+
+        Ok(())
     }
 
-    fn listen_to_packets(&mut self, channel: Channel) {
-        self.pcnet.lock().listeners.push(channel);
+    fn listen<'a>(
+        &mut self,
+        req: fioxa_rpc::OwnedReader<'a, net_capnp::eth_listen_to_packets::Owned>,
+        req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        _res: fioxa_rpc::OwnedBuilder<'a, net_capnp::empty::Owned>,
+        _res_handles: &'a mut fioxa_rpc::RPCHandleBuilder,
+    ) -> Result<(), ::capnp::Error> {
+        let mut handles = RPCHandles::new(req_handles.into_iter());
+        let handle = handles
+            .take_handle(req.get_channel()?)
+            .ok_or_else(|| capnp::Error::failed("channel expected".into()))?;
+
+        self.pcnet
+            .lock()
+            .listeners
+            .push(Channel::from_handle(handle));
+        Ok(())
     }
 }
 
@@ -202,8 +231,8 @@ pub struct PCNET<'b> {
 }
 
 impl PCNET<'_> {
-    fn new(pci_device: kernel_userspace::pci::PCIDevice) -> Option<Self> {
-        let common_header = kernel_userspace::pci::PCIHeaderCommon {
+    fn new(pci_device: PCIDevice) -> Option<Self> {
+        let common_header = PCIHeaderCommon {
             device: Arc::new(Mutex::new(pci_device)),
         };
         // Ensure device is actually supported

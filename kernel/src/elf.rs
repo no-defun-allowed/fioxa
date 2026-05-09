@@ -4,13 +4,14 @@ use bootloader::BootInfo;
 use bootloader::uefi::boot::{MemoryDescriptor, MemoryType};
 use elf::abi::{EM_X86_64, ET_EXEC, PT_LOAD};
 use elf::endian::NativeEndian;
+use fioxa_rpc::service::{ServiceExecutor, connect_service};
+use fioxa_rpc::{RPCHandles, elf_capnp};
 use kernel_sys::syscall::sys_process_spawn_thread;
 use kernel_sys::types::{VMMapFlags, VMOAnonymousFlags};
-use kernel_userspace::elf::{ElfLoaderServiceExecutor, ElfLoaderServiceImpl};
-use kernel_userspace::service::ServiceExecutor;
-use kernel_userspace::{
-    elf::LoadElfError, handle::Handle, ipc::IPCChannel, process::ProcessHandle,
-};
+use kernel_userspace::channel::Channel;
+use kernel_userspace::elf::LoadElfError;
+use kernel_userspace::handle::Handle;
+use kernel_userspace::message::MessageHandle;
 
 use x86_64::{align_down, align_up};
 
@@ -395,36 +396,70 @@ pub fn load_kernel(data: &[u8]) {
 
 pub struct ElfLoader;
 
-impl ElfLoaderServiceImpl for ElfLoader {
-    fn spawn(
+impl fioxa_rpc::elf::Service for ElfLoader {
+    fn spawn<'a>(
         &mut self,
-        elf: kernel_userspace::message::MessageHandle,
-        initial_refs: &[Handle],
-    ) -> Result<ProcessHandle, LoadElfError> {
-        let elf = elf.read_vec();
+        req: fioxa_rpc::OwnedReader<'a, elf_capnp::spawn::Owned>,
+        req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        res: fioxa_rpc::OwnedBuilder<'a, elf_capnp::spawned::Owned>,
+        res_handles: &'a mut fioxa_rpc::RPCHandleBuilder<'static>,
+    ) -> Result<(), ::capnp::Error> {
+        let mut req_handles = RPCHandles::new(req_handles.into_iter());
+        let file = req_handles
+            .take_handle(req.get_file()?)
+            .ok_or_else(|| capnp::Error::failed("file required".into()))?;
 
-        let process = load_elf(&elf)?;
+        let refs = req
+            .get_initial_refs()?
+            .iter()
+            .flat_map(|r| req_handles.get_handle(r))
+            .map(|h| **h);
 
-        let hids: heapless::Vec<_, 31> = initial_refs.iter().map(|h| **h).collect();
+        let process = match file.get_type() {
+            kernel_sys::types::KernelObjectType::Message => {
+                let v = MessageHandle::from_handle(file).read_vec();
+                load_elf(&v)
+            }
+            kernel_sys::types::KernelObjectType::Channel => {
+                // assume a file
+                let mut file = fioxa_rpc::client::RPCClient::new(
+                    connect_service(&Channel::from_handle(file))
+                        .map_err(|e| capnp::Error::failed(format!("failed to connect: {e:?}")))?,
+                );
+                let mut req = fioxa_rpc::fs::Read::new_req();
+                let mut b = req.init();
+                b.set_len(u32::MAX);
+                b.set_offset(0);
+                let r = file
+                    .send(&req.build())
+                    .map_err(|e| capnp::Error::failed(format!("failed to read file: {e:?}")))?;
+                let mut r = r.get_reply()?;
+                let v = r.get_message()?.get_data()?;
+                load_elf(v)
+            }
+            _ => return Err(capnp::Error::failed("unknown file type".into())),
+        };
 
         let process = process
-            .references(ProcessReferences::from_refs(&hids))
+            .map_err(|e| capnp::Error::failed(format!("error making: {e:?}")))?
+            .references(ProcessReferences::from_refs(refs))
             .build();
 
         let proc = with_held_interrupts(|| unsafe {
             let thread = CPULocalStorageRW::get_current_task();
-            ProcessHandle::from_handle(Handle::from_id(thread.process().add_value(process.into())))
+            Handle::from_id(thread.process().add_value(process.into()))
         });
 
-        Ok(proc)
+        res_handles.add(res.init_handle(), proc);
+
+        Ok(())
     }
 }
 
 pub fn elf_new_process_loader() {
     ServiceExecutor::with_name("ELF_LOADER", |chan| {
         sys_process_spawn_thread({
-            || match ElfLoaderServiceExecutor::new(IPCChannel::from_channel(chan), ElfLoader).run()
-            {
+            || match fioxa_rpc::server::RPCServer::new(chan, ElfLoader).run() {
                 Ok(()) => (),
                 Err(e) => error!("Error running elf service: {e}"),
             }

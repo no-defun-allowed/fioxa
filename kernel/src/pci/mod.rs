@@ -9,13 +9,9 @@ use crate::{
 
 use alloc::{boxed::Box, sync::Arc};
 
+use fioxa_rpc::pci_capnp;
 use kernel_sys::syscall::sys_process_spawn_thread;
-use kernel_userspace::{
-    channel::Channel,
-    handle::FIRST_HANDLE,
-    ipc::IPCChannel,
-    pci::{PCIDeviceExecutor, PCIDeviceImpl},
-};
+use kernel_userspace::{channel::Channel, handle::FIRST_HANDLE};
 use mcfg::MCFG;
 mod express;
 mod legacy;
@@ -218,10 +214,9 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
 
                 elf::load_elf(early_bootfs_get("amd_pcnet").unwrap())
                     .unwrap()
-                    .references(ProcessReferences::from_refs(&[
-                        FIRST_HANDLE,
-                        **sid.handle(),
-                    ]))
+                    .references(ProcessReferences::from_refs(
+                        [FIRST_HANDLE, **sid.handle()].into_iter(),
+                    ))
                     .privilege(crate::scheduling::process::ProcessPrivilege::KERNEL)
                     .build();
                 return;
@@ -263,13 +258,41 @@ trait PCIBus {
     ) -> Box<dyn PCIDevice>;
 }
 
-impl PCIDeviceImpl for Box<dyn PCIDevice> {
-    fn read(&mut self, offset: u32) -> u32 {
-        unsafe { self.read_u32(offset) }
+impl fioxa_rpc::pci::Service for Box<dyn PCIDevice> {
+    fn read<'a>(
+        &mut self,
+        req: fioxa_rpc::OwnedReader<'a, pci_capnp::read::Owned>,
+        _req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        mut res: fioxa_rpc::OwnedBuilder<'a, pci_capnp::read_res::Owned>,
+        _res_handles: &'a mut fioxa_rpc::RPCHandleBuilder,
+    ) -> Result<(), ::capnp::Error> {
+        unsafe {
+            let val = match req.get_size()? {
+                pci_capnp::Size::U8 => self.read_u8(req.get_offset()) as u32,
+                pci_capnp::Size::U16 => self.read_u16(req.get_offset()) as u32,
+                pci_capnp::Size::U32 => self.read_u32(req.get_offset()),
+            };
+
+            res.set_val(val);
+            Ok(())
+        }
     }
 
-    fn write(&mut self, offset: u32, data: u32) {
-        unsafe { self.write_u32(offset, data) }
+    fn write<'a>(
+        &mut self,
+        req: fioxa_rpc::OwnedReader<'a, pci_capnp::write::Owned>,
+        _req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        _res: fioxa_rpc::OwnedBuilder<'a, pci_capnp::write_res::Owned>,
+        _res_handles: &'a mut fioxa_rpc::RPCHandleBuilder,
+    ) -> Result<(), ::capnp::Error> {
+        unsafe {
+            match req.get_size()? {
+                pci_capnp::Size::U8 => self.write_u8(req.get_offset(), req.get_val() as u8),
+                pci_capnp::Size::U16 => self.write_u16(req.get_offset(), req.get_val() as u16),
+                pci_capnp::Size::U32 => self.write_u32(req.get_offset(), req.get_val()),
+            }
+        }
+        Ok(())
     }
 }
 
@@ -282,12 +305,12 @@ fn pci_dev_handler(
 ) -> Channel {
     let device = pci_bus.get_device_raw(segment, bus, device, function);
     let (left, right) = Channel::new();
-    sys_process_spawn_thread(move || {
-        match PCIDeviceExecutor::new(IPCChannel::from_channel(left), device).run() {
+    sys_process_spawn_thread(
+        move || match fioxa_rpc::server::RPCServer::new(left, device).run() {
             Ok(()) => (),
             Err(e) => warn!("error handling  service: {e}"),
-        }
-    });
+        },
+    );
 
     right
 }

@@ -7,17 +7,12 @@ use core::ptr::null_mut;
 use alloc::sync::Arc;
 use bit_field::BitField;
 
+use fioxa_rpc::{disk_capnp, server::RPCServer, service::ServiceExecutor};
 use kernel_sys::{
     syscall::{sys_map, sys_process_spawn_thread, sys_vmo_mmap_create},
     types::VMMapFlags,
 };
-use kernel_userspace::{
-    channel::Channel,
-    disk::{DiskControllerService, DiskServiceExecutor, DiskServiceImpl, ata::ATADiskIdentify},
-    ipc::IPCChannel,
-    mutex::Mutex,
-    service::ServiceExecutor,
-};
+use kernel_userspace::mutex::Mutex;
 use volatile::Volatile;
 
 use crate::pci::PCIHeaderCommon;
@@ -130,9 +125,6 @@ impl AHCIDriver {
 
         let ports_implemented = abar.ports_implemented.read();
 
-        let mut disk_controller =
-            DiskControllerService::from_channel(IPCChannel::connect("DISK_CONTROLLER"));
-
         for (i, port) in (abar.ports).iter_mut().enumerate() {
             if ports_implemented.get_bit(i) {
                 let port_type = Self::check_port_type(port);
@@ -140,16 +132,12 @@ impl AHCIDriver {
                 trace!("SATA: {port_type:?}");
 
                 if port_type == PortType::SATA {
-                    let (chan, client) = Channel::new();
-                    disk_controller.register_disk(client);
                     let port = ArcPort(Arc::new(Mutex::new(Port::new(port))));
                     sys_process_spawn_thread(move || {
-                        ServiceExecutor::from_channel(chan, |c| {
+                        ServiceExecutor::with_name("DISK", |c| {
                             let port = port.clone();
                             sys_process_spawn_thread(move || {
-                                DiskServiceExecutor::new(IPCChannel::from_channel(c), port)
-                                    .run()
-                                    .unwrap();
+                                RPCServer::new(c, port).run().unwrap();
                             });
                         })
                         .run()
@@ -164,12 +152,24 @@ impl AHCIDriver {
 #[derive(Clone)]
 struct ArcPort(Arc<Mutex<Port>>);
 
-impl DiskServiceImpl for ArcPort {
-    fn read(&mut self, sector: u64, length: u64) -> alloc::vec::Vec<u8> {
-        self.0.lock().read(sector, length)
+impl fioxa_rpc::disk::Service for ArcPort {
+    fn read<'a>(
+        &mut self,
+        req: fioxa_rpc::OwnedReader<'a, disk_capnp::read::Owned>,
+        req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        res: fioxa_rpc::OwnedBuilder<'a, disk_capnp::read_resp::Owned>,
+        res_handles: &'a mut fioxa_rpc::RPCHandleBuilder<'static>,
+    ) -> Result<(), ::capnp::Error> {
+        self.0.lock().read(req, req_handles, res, res_handles)
     }
 
-    fn identify(&mut self) -> ATADiskIdentify {
-        self.0.lock().identify()
+    fn identify<'a>(
+        &mut self,
+        req: fioxa_rpc::OwnedReader<'a, disk_capnp::identify::Owned>,
+        req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        res: fioxa_rpc::OwnedBuilder<'a, disk_capnp::read_resp::Owned>,
+        res_handles: &'a mut fioxa_rpc::RPCHandleBuilder<'static>,
+    ) -> Result<(), ::capnp::Error> {
+        self.0.lock().identify(req, req_handles, res, res_handles)
     }
 }

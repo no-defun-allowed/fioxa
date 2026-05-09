@@ -1,16 +1,12 @@
 use core::{hint::spin_loop, sync::atomic::AtomicI32};
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use fioxa_rpc::{interrupt_capnp, service::ServiceExecutor};
 use kernel_sys::{
     syscall::sys_process_spawn_thread,
     types::{SysPortNotification, SysPortNotificationValue, SyscallResult},
 };
-use kernel_userspace::{
-    handle::Handle,
-    interrupt::{Interrupt, InterruptVector, InterruptsServiceExecutor, InterruptsServiceImpl},
-    ipc::IPCChannel,
-    service::ServiceExecutor,
-};
+use kernel_userspace::handle::Handle;
 use spin::Lazy;
 use x86_64::{
     instructions::{hlt, interrupts},
@@ -224,7 +220,7 @@ pub fn execute_kexec(f: impl FnOnce() + Send + Sync + 'static) -> ! {
 }
 
 #[inline(always)]
-fn int_interrupt_handler(vector: InterruptVector) {
+fn int_interrupt_handler(vector: interrupt_capnp::Vector) {
     INTERRUPT_SOURCES[vector as usize]
         .lock()
         .iter()
@@ -233,21 +229,21 @@ fn int_interrupt_handler(vector: InterruptVector) {
 
 interrupt_handler!(kb_interrupt_handler => keyboard_int_handler);
 fn kb_interrupt_handler(_: InterruptStackFrame) {
-    int_interrupt_handler(InterruptVector::Keyboard)
+    int_interrupt_handler(interrupt_capnp::Vector::Keyboard)
 }
 
 interrupt_handler!(mouse_interrupt_handler => mouse_int_handler);
 fn mouse_interrupt_handler(_: InterruptStackFrame) {
-    int_interrupt_handler(InterruptVector::Mouse)
+    int_interrupt_handler(interrupt_capnp::Vector::Mouse)
 }
 
 interrupt_handler!(pci_interrupt_handler => pci_int_handler);
 fn pci_interrupt_handler(_: InterruptStackFrame) {
-    int_interrupt_handler(InterruptVector::PCI)
+    int_interrupt_handler(interrupt_capnp::Vector::Pci)
 }
 interrupt_handler!(com1_interrupt_handler => com1_int_handler);
 fn com1_interrupt_handler(_: InterruptStackFrame) {
-    int_interrupt_handler(InterruptVector::COM1)
+    int_interrupt_handler(interrupt_capnp::Vector::Com1)
 }
 
 type InterruptSource = Arc<Spinlock<Vec<Arc<KInterruptHandle>>>>;
@@ -262,11 +258,16 @@ static INTERRUPT_SOURCES: Lazy<[InterruptSource; 4]> = Lazy::new(|| {
 
 struct InterruptService;
 
-impl InterruptsServiceImpl for InterruptService {
-    fn get_interrupt(
+impl fioxa_rpc::interrupt::Service for InterruptService {
+    fn subscribe<'a>(
         &mut self,
-        vector: kernel_userspace::interrupt::InterruptVector,
-    ) -> Option<kernel_userspace::interrupt::Interrupt> {
+        req: fioxa_rpc::OwnedReader<'a, interrupt_capnp::subscribe::Owned>,
+        _req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        res: fioxa_rpc::OwnedBuilder<'a, interrupt_capnp::subscribe_resp::Owned>,
+        res_handles: &'a mut fioxa_rpc::RPCHandleBuilder<'static>,
+    ) -> Result<(), ::capnp::Error> {
+        let vector = req.get_vector()?;
+
         let h = Arc::new(KInterruptHandle::new());
 
         let id = with_held_interrupts(|| unsafe {
@@ -274,8 +275,15 @@ impl InterruptsServiceImpl for InterruptService {
             Handle::from_id(thread.process().add_value(h.clone().into()))
         });
 
-        INTERRUPT_SOURCES.get(vector as usize)?.lock().push(h);
-        Some(Interrupt::from_handle(id))
+        INTERRUPT_SOURCES
+            .get(vector as usize)
+            .ok_or_else(|| capnp::Error::failed("interrupt source unknown".into()))?
+            .lock()
+            .push(h);
+
+        res_handles.add(res.init_handle(), id);
+
+        Ok(())
     }
 }
 
@@ -283,12 +291,7 @@ impl InterruptsServiceImpl for InterruptService {
 pub fn check_interrupts() {
     ServiceExecutor::with_name("INTERRUPTS", |channel| {
         sys_process_spawn_thread({
-            move || match InterruptsServiceExecutor::new(
-                IPCChannel::from_channel(channel),
-                InterruptService,
-            )
-            .run()
-            {
+            move || match fioxa_rpc::server::RPCServer::new(channel, InterruptService).run() {
                 Ok(()) => (),
                 Err(e) => error!("Error running service: {e}"),
             }

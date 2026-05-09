@@ -1,102 +1,74 @@
-use alloc::sync::Arc;
-use kernel_sys::types::SyscallError;
-use rkyv::{
-    Archive, Deserialize, Serialize,
-    rancor::{Error, Source},
+use crate::{
+    client::RPCClient,
+    pci_capnp::{self, PCIMessage},
 };
+use alloc::sync::Arc;
+use kernel_userspace::mutex::Mutex;
 
-use crate::{ipc::IPCChannel, mutex::Mutex};
+crate::generate_rpc!(pci_capnp::PCIMessage, Service;
+    Read @ Read @ read(pci_capnp::read::Owned) -> pci_capnp::read_res::Owned;
+    Write @ Write @ write(pci_capnp::write::Owned) -> pci_capnp::write_res::Owned;
+);
 
-#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
-pub enum PCIDevCmd {
-    Read(u32),
-    Write(u32, u32),
-}
-
-pub struct PCIDevice(pub IPCChannel);
+pub struct PCIDevice(pub RPCClient<PCIMessage>);
 
 #[allow(dead_code)]
 impl PCIDevice {
+    pub const fn new(client: RPCClient<PCIMessage>) -> Self {
+        Self(client)
+    }
+
+    pub fn into_inner(self) -> RPCClient<PCIMessage> {
+        self.0
+    }
+
+    pub const fn client(&mut self) -> &mut RPCClient<PCIMessage> {
+        &mut self.0
+    }
+
+    unsafe fn read(&mut self, offset: u32, size: pci_capnp::Size) -> u32 {
+        let mut c = Read::new_req();
+        let mut b = c.init();
+        b.set_offset(offset);
+        b.set_size(size);
+        let r = self.client().send(&c.build()).unwrap();
+        let mut r = r.get_reply().unwrap();
+        r.get_message().unwrap().get_val()
+    }
+
     unsafe fn read_u8(&mut self, offset: u32) -> u8 {
-        unsafe {
-            let block = self.read_u32(offset & !0b11);
-            ((block >> (8 * (offset & 0b11))) & 0xFF) as u8
-        }
+        unsafe { self.read(offset, pci_capnp::Size::U8) as u8 }
     }
 
     unsafe fn read_u16(&mut self, offset: u32) -> u16 {
-        unsafe {
-            let block = self.read_u32(offset & !0b11);
-            ((block >> (8 * (offset & 0b11))) & 0xFFFF) as u16
-        }
+        unsafe { self.read(offset, pci_capnp::Size::U16) as u16 }
     }
 
     unsafe fn read_u32(&mut self, offset: u32) -> u32 {
-        self.0.send(&PCIDevCmd::Read(offset)).unwrap();
-        self.0.recv().unwrap().deserialize().unwrap()
+        unsafe { self.read(offset, pci_capnp::Size::U32) }
+    }
+
+    unsafe fn write(&mut self, offset: u32, size: pci_capnp::Size, val: u32) {
+        let mut c = Write::new_req();
+        let mut b = c.init();
+        b.set_offset(offset);
+        b.set_size(size);
+        b.set_val(val);
+        let r = self.client().send(&c.build()).unwrap();
+        let mut r = r.get_reply().unwrap();
+        r.get_message().unwrap();
     }
 
     unsafe fn write_u8(&mut self, offset: u32, data: u8) {
-        unsafe {
-            let mut block = self.read_u32(offset & !0b11);
-            block &= !(0xFF << (8 * (offset & 0b11)));
-            block |= (data as u32) << (8 * (offset & 0b11));
-            self.write_u32(offset & !0b11, block);
-        }
+        unsafe { self.write(offset, pci_capnp::Size::U8, data as u32) }
     }
 
     unsafe fn write_u16(&mut self, offset: u32, data: u16) {
-        unsafe {
-            let mut block = self.read_u32(offset & !0b10);
-            block &= !(0xFFFF << (8 * (offset & 0b11)));
-            block |= (data as u32) << (8 * (offset & 0b11));
-            self.write_u32(offset & !0b11, block);
-        }
+        unsafe { self.write(offset, pci_capnp::Size::U16, data as u32) }
     }
 
     unsafe fn write_u32(&mut self, offset: u32, data: u32) {
-        self.0.send(&PCIDevCmd::Write(offset, data)).unwrap();
-        self.0.recv().unwrap().deserialize().unwrap()
-    }
-}
-
-pub trait PCIDeviceImpl {
-    fn read(&mut self, offset: u32) -> u32;
-
-    fn write(&mut self, offset: u32, data: u32);
-}
-
-pub struct PCIDeviceExecutor<I: PCIDeviceImpl> {
-    channel: IPCChannel,
-    service: I,
-}
-
-impl<I: PCIDeviceImpl> PCIDeviceExecutor<I> {
-    pub fn new(channel: IPCChannel, service: I) -> Self {
-        Self { channel, service }
-    }
-
-    pub fn run(&mut self) -> Result<(), Error> {
-        loop {
-            let mut msg = match self.channel.recv() {
-                Ok(m) => m,
-                Err(SyscallError::ChannelClosed) => return Ok(()),
-                Err(e) => return Err(Error::new(e)),
-            };
-            let (msg, _) = msg.access::<ArchivedPCIDevCmd>()?;
-
-            match msg {
-                ArchivedPCIDevCmd::Read(offset) => {
-                    let res = self.service.read(offset.to_native());
-                    self.channel.send(&res)
-                }
-                ArchivedPCIDevCmd::Write(offset, data) => {
-                    self.service.write(offset.to_native(), data.to_native());
-                    self.channel.send(&())
-                }
-            }
-            .map_err(Error::new)?;
-        }
+        unsafe { self.write(offset, pci_capnp::Size::U32, data) }
     }
 }
 

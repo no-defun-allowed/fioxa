@@ -3,13 +3,18 @@
 
 use core::time::Duration;
 
+use fioxa_rpc::{
+    client::RPCClient,
+    fs::{GetChildren, add_path, stat_by_path, tree},
+    fs_capnp,
+    service::{connect_service, get_services},
+};
 use kernel_userspace::{
-    elf::ElfLoaderService,
-    fs::{FSControllerService, FSFileId, FSFileType, FSService, add_path, stat_by_path},
-    ipc::IPCChannel,
+    channel::Channel,
     message::MessageHandle,
-    process::INIT_HANDLE_SERVICE,
-    sys::syscall::{sys_echo, sys_exit, sys_sleep},
+    mutex::Mutex,
+    process::INIT_HANDLE_CHANNEL,
+    sys::syscall::{sys_echo, sys_exit, sys_process_spawn_thread, sys_sleep},
 };
 
 extern crate alloc;
@@ -17,7 +22,9 @@ extern crate alloc;
 extern crate userspace;
 extern crate userspace_slaballoc;
 
-use alloc::{borrow::ToOwned, boxed::Box, collections::VecDeque, string::String, vec::Vec};
+use alloc::{
+    borrow::ToOwned, boxed::Box, collections::VecDeque, string::String, sync::Arc, vec::Vec,
+};
 use userspace::print::{STDERR_CHANNEL, STDIN_CHANNEL, STDOUT_CHANNEL, WRITER_STDOUT};
 
 init_userspace!(main);
@@ -30,14 +37,23 @@ pub fn main() {
     let mut input_buf = String::new();
     let mut input = input_buf.chars();
 
-    let mut elf_loader = ElfLoaderService::from_channel(IPCChannel::connect("ELF_LOADER"));
-    let mut fs_controller = FSControllerService::from_channel(IPCChannel::connect("FS_CONTROLLER"));
+    let filesystems: Arc<Mutex<Vec<Channel>>> = Default::default();
 
-    let mut current_fs: Option<(usize, FSService, FSFileId)> = None;
+    sys_process_spawn_thread({
+        let filesystems = filesystems.clone();
+        move || {
+            get_services("FS", true, |chan| {
+                filesystems.lock().push(chan);
+            })
+            .unwrap();
+        }
+    });
+
+    let mut current_fs: Option<usize> = None;
 
     loop {
         match current_fs {
-            Some((id, ..)) => print!("{id}:{cwd} "),
+            Some(id) => print!("{id}:{cwd} "),
             None => print!(":{cwd} "),
         }
 
@@ -104,184 +120,185 @@ pub fn main() {
             "disk" => {
                 let c = rest.trim();
                 let num = c.parse::<usize>();
-                let mut fs = fs_controller.get_filesystems(false);
-
+                let fs_len = filesystems.lock().len();
                 match num {
-                    Ok(num) => match fs.nth(num) {
-                        Some(fs) => {
-                            let mut fs = FSService::from_channel(IPCChannel::from_channel(
-                                fs.connect().unwrap(),
-                            ));
-                            let root = fs.stat_root().id;
-                            current_fs = Some((num, fs, root));
-                            cwd.clear();
-                            cwd.push('/');
+                    Ok(num) => {
+                        if num < fs_len {
+                            current_fs = Some(num);
+                        } else {
+                            println!("Disk {num} not in range 0..{fs_len}");
                         }
-                        None => {
-                            println!("Unknown disk")
-                        }
-                    },
+                    }
                     Err(_) => {
-                        println!("Drives:");
-                        for (i, _) in fs.enumerate() {
-                            println!("Disk {}", i)
-                        }
+                        println!("Disks: 0..{fs_len}")
                     }
                 }
             }
             "ls" => {
-                let Some((_, fs, root)) = &mut current_fs else {
+                let Some(fs_id) = current_fs else {
                     println!("No disk selected");
                     continue;
                 };
 
+                let fs = filesystems.lock().get(fs_id).cloned().unwrap();
+
                 let path = add_path(&cwd, rest);
 
-                let Some(file) = stat_by_path(*root, &path, fs) else {
-                    println!("Invalid path");
-                    continue;
-                };
+                match stat_by_path(fs, &path).unwrap() {
+                    fioxa_rpc::fs::StatResult::None => println!("Invalid path"),
+                    fioxa_rpc::fs::StatResult::File(_) => println!("This is a file"),
+                    fioxa_rpc::fs::StatResult::Folder(channel) => {
+                        let mut folder = RPCClient::<fs_capnp::FolderMessage>::new(
+                            connect_service(&channel).unwrap(),
+                        );
 
-                match file.file {
-                    kernel_userspace::fs::FSFileType::File { .. } => {
-                        println!("This is a file");
-                    }
-                    kernel_userspace::fs::FSFileType::Folder => {
-                        let mut children = fs.get_children(file.id);
-                        let (children, _) = children.access().unwrap();
-                        let mut names: Vec<_> =
-                            children.as_ref().unwrap().iter().map(|e| e.0).collect();
-                        numeric_sort::sort_unstable(&mut names);
-                        for child in names {
-                            println!("{child}")
+                        let mut req = GetChildren::new_req();
+                        req.init();
+                        let r = folder.send(&req.build()).unwrap();
+                        let mut r = r.get_reply().unwrap();
+                        let r = r.get_message().unwrap();
+
+                        if r.has_entries() {
+                            let mut names: Vec<_> = r
+                                .get_entries()
+                                .unwrap()
+                                .iter()
+                                .map(|e| e.get_name().unwrap().to_str().unwrap())
+                                .collect();
+
+                            numeric_sort::sort_unstable(&mut names);
+
+                            for child in names {
+                                println!("{child}")
+                            }
                         }
                     }
                 }
             }
             "tree" => {
-                let Some((_, fs, root)) = &mut current_fs else {
+                let Some(fs_id) = current_fs else {
                     println!("No disk selected");
                     continue;
                 };
 
+                let fs = filesystems.lock().get(fs_id).cloned().unwrap();
+
                 let path = add_path(&cwd, rest);
 
-                let Some(file) = stat_by_path(*root, &path, fs) else {
-                    println!("Invalid path");
-                    continue;
-                };
-
-                match file.file {
-                    kernel_userspace::fs::FSFileType::File { .. } => {
-                        println!("This is a file");
-                    }
-                    kernel_userspace::fs::FSFileType::Folder => {
+                match stat_by_path(fs, &path).unwrap() {
+                    fioxa_rpc::fs::StatResult::None => println!("Invalid path"),
+                    fioxa_rpc::fs::StatResult::File(_) => println!("This is a file"),
+                    fioxa_rpc::fs::StatResult::Folder(channel) => {
                         let stdout = &mut *WRITER_STDOUT.lock();
-                        kernel_userspace::fs::tree(stdout, fs, file.id, String::new()).unwrap();
+                        tree(stdout, &channel, String::new()).unwrap();
                     }
                 }
             }
             "cd" => {
-                let Some((_, fs, root)) = &mut current_fs else {
+                let Some(fs_id) = current_fs else {
                     println!("No disk selected");
                     continue;
                 };
 
-                let new_cwd = add_path(&cwd, rest);
-                match stat_by_path(*root, &new_cwd, fs) {
-                    Some(file) => match file.file {
-                        FSFileType::File { .. } => println!("Is a file"),
-                        FSFileType::Folder => cwd = new_cwd,
-                    },
-                    None => {
-                        println!("Invalid path")
+                let fs = filesystems.lock().get(fs_id).cloned().unwrap();
+
+                let path = add_path(&cwd, rest);
+
+                match stat_by_path(fs, &path).unwrap() {
+                    fioxa_rpc::fs::StatResult::None => println!("Invalid path"),
+                    fioxa_rpc::fs::StatResult::File(_) => println!("This is a file"),
+                    fioxa_rpc::fs::StatResult::Folder(_) => {
+                        cwd = path;
                     }
                 }
             }
             "cat" => {
                 for file in rest.split_ascii_whitespace() {
-                    let Some((_, fs, root)) = &mut current_fs else {
+                    let Some(fs_id) = current_fs else {
                         println!("No disk selected");
                         continue;
                     };
 
+                    let fs = filesystems.lock().get(fs_id).cloned().unwrap();
+
                     let path = add_path(&cwd, file);
 
-                    let Some(file) = stat_by_path(*root, &path, fs) else {
-                        println!("Invalid path");
-                        continue;
-                    };
+                    match stat_by_path(fs, &path).unwrap() {
+                        fioxa_rpc::fs::StatResult::None => println!("Invalid path"),
+                        fioxa_rpc::fs::StatResult::Folder(_) => println!("This is a folder"),
+                        fioxa_rpc::fs::StatResult::File(file) => {
+                            let mut file = RPCClient::<fioxa_rpc::fs_capnp::FileMessage>::new(
+                                connect_service(&file).unwrap(),
+                            );
 
-                    match file.file {
-                        kernel_userspace::fs::FSFileType::File { length } => {
-                            let read_size = 64 * 1024;
-                            for start in (0..length).step_by(read_size) {
-                                let len = (length - start).min(read_size);
+                            let mut req = fioxa_rpc::fs::Size::new_req();
+                            req.init();
+                            let r = file.send(&req.build()).unwrap();
+                            let mut r = r.get_reply().unwrap();
+                            let length = r.get_message().unwrap().get_size() as usize;
 
-                                let mut read = fs.read_file(file.id, start, len);
-                                let (buf, _) = read.access().unwrap();
+                            const READ_SIZE: usize = 64 * 1024;
+                            for start in (0..length).step_by(READ_SIZE) {
+                                let len = (length - start).min(READ_SIZE);
 
-                                WRITER_STDOUT
-                                    .lock()
-                                    .write_raw(buf.as_ref().unwrap())
-                                    .unwrap();
+                                let mut req = fioxa_rpc::fs::Read::new_req();
+                                let mut b = req.init();
+                                b.set_offset(start as u64);
+                                b.set_len(len as u32);
+
+                                let r = file.send(&req.build()).unwrap();
+                                let mut r = r.get_reply().unwrap();
+                                let data = r.get_message().unwrap().get_data().unwrap();
+
+                                WRITER_STDOUT.lock().write_raw(data).unwrap();
                             }
-                        }
-                        kernel_userspace::fs::FSFileType::Folder => {
-                            println!("This is a directory");
                         }
                     }
                 }
             }
             "exec" => {
-                let (prog, args) = rest.split_once(' ').unwrap_or((rest, ""));
-
-                let Some((_, fs, root)) = &mut current_fs else {
+                let Some(fs_id) = current_fs else {
                     println!("No disk selected");
                     continue;
                 };
 
-                let path = add_path(&cwd, prog);
-
-                let Some(file) = stat_by_path(*root, &path, fs) else {
-                    println!("Invalid path");
-                    continue;
-                };
-
-                let contents = match file.file {
-                    kernel_userspace::fs::FSFileType::File { length } => {
-                        let mut read = fs.read_file(file.id, 0, length);
-                        let (vec, _) = read.access().unwrap();
-                        MessageHandle::create(vec.as_ref().unwrap())
-                    }
-                    kernel_userspace::fs::FSFileType::Folder => {
-                        println!("This is a directory");
-                        continue;
-                    }
-                };
+                let (prog, args) = rest.split_once(' ').unwrap_or((rest, ""));
 
                 let args = MessageHandle::create(args.as_bytes());
 
-                let proc = elf_loader.spawn(
-                    &contents,
-                    &[
-                        INIT_HANDLE_SERVICE.0.handle(),
-                        STDIN_CHANNEL.handle(),
-                        STDOUT_CHANNEL.handle(),
-                        STDERR_CHANNEL.handle(),
-                        args.handle(),
-                    ],
-                );
+                let fs = filesystems.lock().get(fs_id).cloned().unwrap();
 
-                let mut proc = match proc {
-                    Ok(p) => p,
-                    Err(err) => {
-                        println!("Error spawning: `{err}`");
+                let path = add_path(&cwd, prog);
+
+                let proc = match stat_by_path(fs, &path).unwrap() {
+                    fioxa_rpc::fs::StatResult::None => {
+                        println!("Invalid path");
                         continue;
+                    }
+                    fioxa_rpc::fs::StatResult::Folder(_) => {
+                        println!("This is a folder");
+                        continue;
+                    }
+                    fioxa_rpc::fs::StatResult::File(channel) => {
+                        fioxa_rpc::elf::ElfClient::wellknown().spawn(
+                            channel.handle(),
+                            &[
+                                INIT_HANDLE_CHANNEL.handle(),
+                                STDIN_CHANNEL.handle(),
+                                STDOUT_CHANNEL.handle(),
+                                STDERR_CHANNEL.handle(),
+                                args.handle(),
+                            ],
+                        )
                     }
                 };
 
-                proc.blocking_exit_code();
+                match proc {
+                    Ok(mut p) => {
+                        p.blocking_exit_code();
+                    }
+                    Err(e) => println!("failed spawning: {e:?}"),
+                }
             }
             // "uptime" => {
             //     let mut uptime = time::uptime() / 1000;

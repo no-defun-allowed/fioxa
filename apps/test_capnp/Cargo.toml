@@ -1,0 +1,12 @@
+[package]
+name = "test_capnp"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+kernel_userspace.workspace = true
+userspace_slaballoc.workspace = true
+userspace.workspace = true
+fioxa_rpc.workspace = true
+
+capnp.workspace = true
