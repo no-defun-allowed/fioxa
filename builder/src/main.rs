@@ -29,6 +29,7 @@ const TO_BUILD: &[(&str, Option<&str>, &str)] = &[
     ("apps", Some("terminal"), "apps/terminal"),
     ("drivers", Some("amd_pcnet"), "drivers/amd_pcnet"),
     ("drivers", Some("ps2"), "drivers/ps2"),
+    ("drivers", Some("fat"), "drivers/fat"),
     // ! MUST BE LAST
     ("kernel", None, "fioxa.elf"),
 ];

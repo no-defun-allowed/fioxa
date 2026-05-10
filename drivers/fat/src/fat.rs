@@ -12,12 +12,10 @@ use alloc::{
     string::{String, ToString},
     sync::Arc,
 };
-use fioxa_rpc::{fs_capnp, server::RPCServer, service::ServiceExecutor};
+use fioxa_rpc::{client::RPCClient, fs_capnp, server::RPCServer, service::ServiceExecutor};
 use hashbrown::HashMap;
 use kernel_sys::syscall::sys_process_spawn_thread;
 use kernel_userspace::{channel::Channel, handle::Handle, mutex::Mutex};
-
-use crate::fs::FSPartitionDisk;
 
 #[derive(Clone, Copy)]
 #[repr(C, packed)]
@@ -107,6 +105,7 @@ pub struct FAT32Ext {
     fat_type_label: [u8; 8],
 }
 
+#[allow(dead_code)]
 pub enum FatExtendedBootRecord {
     FAT16(FAT16Ext),
     FAT32(FAT32Ext),
@@ -121,17 +120,10 @@ impl FatExtendedBootRecord {
     }
 }
 
-#[derive(Debug)]
-pub enum DirEntryType {
-    Folder,
-    // Filesize
-    File(u32),
-}
-
 pub struct FAT {
     pub bios_parameter_block: BiosParameterBlock,
     pub fat_ebr: FatExtendedBootRecord,
-    pub disk: FSPartitionDisk,
+    pub disk: RefCell<RPCClient<fioxa_rpc::disk_capnp::DiskMessage>>,
     pub disk_cache: RefCell<BTreeMap<u32, Box<[u8]>>>,
     pub root_cluster: u32,
     pub total_clusters: u32,
@@ -246,45 +238,6 @@ impl Iterator for FreeClusterIterator<'_> {
     }
 }
 
-pub struct ClusterWriteIterator<'a> {
-    fat: &'a FAT,
-    cluster: Option<u32>,
-    free: FreeClusterIterator<'a>,
-}
-
-impl<'a> ClusterWriteIterator<'a> {
-    pub fn new(fat: &'a FAT, cluster: u32, free: FreeClusterIterator<'a>) -> Self {
-        Self {
-            fat,
-            cluster: Some(cluster),
-            free,
-        }
-    }
-}
-impl Iterator for ClusterWriteIterator<'_> {
-    type Item = u32;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let cluster = self.cluster?;
-
-        let mut entry = self.fat.get_cluster_entry(cluster);
-
-        match entry.get_next() {
-            Some(v) => self.cluster = Some(v),
-            None => {
-                // allocate
-                let next = self.free.next()?;
-                entry.data = next;
-                self.fat.set_cluster_entry(cluster, entry);
-                self.fat
-                    .set_cluster_entry(next, ClusterEntry::eof(entry.fat));
-            }
-        }
-
-        Some(cluster)
-    }
-}
-
 impl FAT {
     pub fn root_dir_sectors(&self) -> u32 {
         let bpb = self.bios_parameter_block;
@@ -311,6 +264,7 @@ impl FAT {
         }
     }
 
+    #[expect(dead_code)]
     pub fn get_root_directory_sector(&self) -> u32 {
         match self.fat_ebr {
             FatExtendedBootRecord::FAT16(_) => self.first_data_sector() - self.root_dir_sectors(),
@@ -327,25 +281,36 @@ impl FAT {
             + self.first_data_sector()
     }
 
+    #[expect(dead_code)]
     pub fn write_disk_cache(&self, sector: u32, data: &[u8; 512]) {
         self.disk_cache
             .borrow_mut()
             .entry(sector)
             .or_default()
             .copy_from_slice(data);
-        self.disk.write(sector as u64, data);
+        self.disk_write(sector, data);
     }
 
     pub fn disk_read<T>(&self, sector: u32, len: u32, f: impl FnOnce(&[u8]) -> T) -> T {
-        f(self
-            .disk
-            .read(sector as u64, len)
-            .get_reply()
+        let mut read = fioxa_rpc::disk::Read::new_req();
+        let mut b = read.init();
+        b.set_sector(sector as u64);
+        b.set_count(len);
+        let r = self.disk.borrow_mut().send(&read.build()).unwrap();
+        f(r.get_reply()
             .unwrap()
             .get_message()
             .unwrap()
             .get_data()
             .unwrap())
+    }
+
+    pub fn disk_write(&self, sector: u32, data: &[u8]) {
+        let mut write = fioxa_rpc::disk::Write::new_req();
+        let mut b = write.init();
+        b.set_sector(sector as u64);
+        b.set_data(data);
+        self.disk.borrow_mut().send(&write.build()).unwrap();
     }
 
     pub fn read_disk_cache<T>(&self, sector: u32, f: impl FnOnce(&[u8; 512]) -> T) -> T {
@@ -364,7 +329,7 @@ impl FAT {
             .or_insert_with(|| self.disk_read(sector, 1, |buf| buf.into()));
 
         let t = f((&mut **data).try_into().unwrap());
-        self.disk.write(sector as u64, data);
+        self.disk_write(sector, data);
         t
     }
 
@@ -505,6 +470,7 @@ impl FAT {
         None
     }
 
+    #[expect(dead_code)]
     fn iterate_dir_entries_mut<T>(
         &mut self,
         file: FATFile,
@@ -678,8 +644,10 @@ pub fn get_fat_type(bpb: &BiosParameterBlock) -> (FatType, u32) {
     }
 }
 
-pub fn read_bios_block(disk: FSPartitionDisk) {
-    let buf = disk.read(0, 1);
+pub fn read_bios_block(mut disk: RPCClient<fioxa_rpc::disk_capnp::DiskMessage>) {
+    let mut req = fioxa_rpc::disk::Read::new_req();
+    req.init().set_count(1);
+    let buf = disk.send(&req.build()).unwrap();
     let mut buf = buf.get_reply().unwrap();
     let buffer = buf.get_message().unwrap().get_data().unwrap();
 
@@ -706,7 +674,7 @@ pub fn read_bios_block(disk: FSPartitionDisk) {
             let fat = FAT {
                 bios_parameter_block,
                 fat_ebr: FatExtendedBootRecord::FAT16(fat16ext),
-                disk,
+                disk: RefCell::new(disk),
                 disk_cache: Default::default(),
                 root_cluster: 0,
                 total_clusters,
@@ -725,7 +693,7 @@ pub fn read_bios_block(disk: FSPartitionDisk) {
             let fat = FAT {
                 bios_parameter_block,
                 fat_ebr: FatExtendedBootRecord::FAT32(fat32ext),
-                disk,
+                disk: RefCell::new(disk),
                 disk_cache: Default::default(),
                 root_cluster: fat32ext.root_cluster,
                 total_clusters,
@@ -903,19 +871,18 @@ impl fioxa_rpc::fs::FileService for FatFile {
     ) -> Result<(), ::capnp::Error> {
         let offset = req.get_offset() as usize;
         let len = req.get_len() as usize;
-
-        let output = res.init_data(len as u32);
-        let mut output_idx = 0;
-
         let fat = self.fat.lock();
 
         let sectors_per_cluster = fat.bios_parameter_block.sectors_per_cluster as usize;
 
-        let cluster = self.dir_entry(&fat, |e| e.cluster());
+        let (cluster, size) = self.dir_entry(&fat, |e| (e.cluster(), e.size));
         let cluster_iter = ClusterIterator::new(&fat, cluster);
 
         let mut read_cursor = offset;
-        let read_end = offset + len;
+        let read_end = (offset + len).min(size as usize);
+
+        let output = res.init_data((read_end - read_cursor) as u32);
+        let mut output_idx = 0;
 
         for (index, cluster) in cluster_iter.enumerate() {
             let sector_start = index * sectors_per_cluster;
@@ -1082,11 +1049,11 @@ impl fioxa_rpc::fs::FileService for FatFile {
 
                     write_region.copy_from_slice(&data[read_idx..read_idx + w_bytes]);
                     read_idx += write_region.len();
-                    fat.disk.write(disk_sector as u64, &block);
+                    fat.disk_write(disk_sector as u32, &block);
                 } else {
                     let block = &data[read_idx..read_idx + w_bytes];
                     read_idx += w_bytes;
-                    fat.disk.write(disk_sector as u64, block);
+                    fat.disk_write(disk_sector as u32, block);
                 }
                 write_cursor += w_bytes;
                 if write_cursor == write_end {

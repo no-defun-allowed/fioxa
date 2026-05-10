@@ -1,0 +1,19 @@
+[package]
+name = "fat"
+version = "0.1.0"
+edition.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+fioxa_rpc.workspace = true
+kernel_sys.workspace = true
+kernel_userspace.workspace = true
+userspace_slaballoc.workspace = true
+userspace.workspace = true
+
+capnp.workspace = true
+hashbrown.workspace = true
+log.workspace = true
+x86_64.workspace = true
+

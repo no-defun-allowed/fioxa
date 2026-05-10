@@ -10,6 +10,7 @@ pub const LOOKUP: &[(&str, &[u8])] = &[
     ("terminal",    include_bytes!("../../builder/fioxa/apps/terminal")),
     ("amd_pcnet",   include_bytes!("../../builder/fioxa/drivers/amd_pcnet")),
     ("ps2",         include_bytes!("../../builder/fioxa/drivers/ps2")),
+    ("fat",         include_bytes!("../../builder/fioxa/drivers/fat")),
 ];
 
 pub fn early_bootfs_get(file: &str) -> Option<&'static [u8]> {

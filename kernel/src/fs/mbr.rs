@@ -1,6 +1,7 @@
-use kernel_sys::syscall::sys_process_spawn_thread;
+use fioxa_rpc::client::RPCClient;
+use kernel_userspace::handle::FIRST_HANDLE;
 
-use crate::fs::{FSPartitionDisk, fat::read_bios_block};
+use crate::{bootfs::early_bootfs_get, elf, scheduling::process::ProcessReferences};
 
 #[repr(C, packed)]
 pub struct PartitionTableEntry {
@@ -22,8 +23,13 @@ pub struct MasterBootRecord {
     magic_number: [u8; 2],
 }
 
-pub fn read_partitions(drive: FSPartitionDisk) {
-    let mbr = drive.read(0, 1);
+pub fn read_partitions(mut drive: RPCClient<fioxa_rpc::disk_capnp::DiskMessage>) {
+    let mut req = fioxa_rpc::disk::Read::new_req();
+    let mut b = req.init();
+    b.set_sector(0);
+    b.set_count(1);
+
+    let mbr = drive.send(&req.build()).unwrap();
     let mut mbr = mbr.get_reply().unwrap();
     let mbr = mbr.get_message().unwrap().get_data().unwrap();
 
@@ -44,8 +50,26 @@ pub fn read_partitions(drive: FSPartitionDisk) {
                 part.length / 1024 * 512 / 1024,
                 { part.bootable } == 0x80
             );
-            let fs_disk = drive.narrow(part.start_lba as u64, part.length as u64);
-            sys_process_spawn_thread(|| read_bios_block(fs_disk));
+
+            let mut req = fioxa_rpc::disk::Restrict::new_req();
+            let mut b = req.init();
+            b.set_offset(part.start_lba as u64);
+            b.set_length(part.length as u64);
+            b.set_write(true);
+
+            let mut r = drive.send(&req.build()).unwrap();
+            let mut h = r.take_handles_rpc();
+            let mut new = r.get_reply().unwrap();
+            let new = new.get_message().unwrap().get_handle().unwrap();
+            let fs_disk = h.take_handle(new).unwrap();
+
+            elf::load_elf(early_bootfs_get("fat").unwrap())
+                .unwrap()
+                .references(ProcessReferences::from_refs(
+                    [FIRST_HANDLE, *fs_disk].into_iter(),
+                ))
+                .privilege(crate::scheduling::process::ProcessPrivilege::USER)
+                .build();
         }
     }
 }

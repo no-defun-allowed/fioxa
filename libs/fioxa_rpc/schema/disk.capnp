@@ -6,6 +6,7 @@ enum DiskMessage {
     read @0;
     identify @1;
     write @2;
+    restrict @3;
 }
 
 struct Read {
@@ -25,4 +26,14 @@ struct Write {
 }
 
 struct WriteResp {}
+
+struct Restrict {
+    write @0 :Bool;
+    offset @1 :UInt64;
+    length @2 :UInt64;
+}
+
+struct RestrictResp {
+    handle @0 :Rpc.HandleIndex;
+}
 

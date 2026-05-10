@@ -293,6 +293,40 @@ impl Port {
 
         self.issue(slot)
     }
+
+    pub fn read(&mut self, sector: u64, count: u32, buffer: &mut [u8]) {
+        let mut read_head = 0usize;
+        let sector = sector as usize;
+        let read_tail = count as usize;
+
+        while read_head < read_tail {
+            let count = (read_tail - read_head).min(MAX_SECTORS);
+            self.read_into_buf(
+                (sector + read_head) as u64,
+                count as u32,
+                &mut buffer[read_head * 512..(read_head + count) * 512],
+            )
+            .unwrap();
+            read_head += count;
+        }
+    }
+
+    pub fn write(&mut self, sector: u64, data: &[u8]) {
+        let mut write_head = 0usize;
+        let sector = sector as usize;
+        let write_tail = data.len() / 512;
+
+        while write_head < write_tail {
+            let count = (write_tail - write_head).min(MAX_SECTORS);
+            self.write_from_buf(
+                (sector + write_head) as u64,
+                count as u32,
+                &data[write_head * 512..(write_head + count) * 512],
+            )
+            .unwrap();
+            write_head += count;
+        }
+    }
 }
 
 impl fioxa_rpc::disk::Service for Port {

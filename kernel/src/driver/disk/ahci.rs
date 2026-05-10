@@ -12,7 +12,7 @@ use kernel_sys::{
     syscall::{sys_map, sys_process_spawn_thread, sys_vmo_mmap_create},
     types::VMMapFlags,
 };
-use kernel_userspace::mutex::Mutex;
+use kernel_userspace::{channel::Channel, mutex::Mutex};
 use volatile::Volatile;
 
 use crate::pci::PCIHeaderCommon;
@@ -132,7 +132,12 @@ impl AHCIDriver {
                 trace!("SATA: {port_type:?}");
 
                 if port_type == PortType::SATA {
-                    let port = ArcPort(Arc::new(Mutex::new(Port::new(port))));
+                    let port = ArcPort {
+                        port: Arc::new(Mutex::new(Port::new(port))),
+                        offset: 0,
+                        length: u64::MAX,
+                        write: true,
+                    };
                     sys_process_spawn_thread(move || {
                         ServiceExecutor::with_name("DISK", |c| {
                             let port = port.clone();
@@ -150,17 +155,29 @@ impl AHCIDriver {
 }
 
 #[derive(Clone)]
-struct ArcPort(Arc<Mutex<Port>>);
+struct ArcPort {
+    port: Arc<Mutex<Port>>,
+    offset: u64,
+    length: u64,
+    write: bool,
+}
 
 impl fioxa_rpc::disk::Service for ArcPort {
     fn read<'a>(
         &mut self,
         req: fioxa_rpc::OwnedReader<'a, disk_capnp::read::Owned>,
-        req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        _req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
         res: fioxa_rpc::OwnedBuilder<'a, disk_capnp::read_resp::Owned>,
-        res_handles: &'a mut fioxa_rpc::RPCHandleBuilder<'static>,
+        _res_handles: &'a mut fioxa_rpc::RPCHandleBuilder<'static>,
     ) -> Result<(), ::capnp::Error> {
-        self.0.lock().read(req, req_handles, res, res_handles)
+        if req.get_count() as u64 + req.get_sector() > self.length {
+            return Err(capnp::Error::failed("out of bounds".into()));
+        }
+        let start = req.get_sector() + self.offset;
+        let buffer = res.init_data(req.get_count() * 512);
+
+        self.port.lock().read(start, req.get_count(), buffer);
+        Ok(())
     }
 
     fn identify<'a>(
@@ -170,16 +187,86 @@ impl fioxa_rpc::disk::Service for ArcPort {
         res: fioxa_rpc::OwnedBuilder<'a, disk_capnp::read_resp::Owned>,
         res_handles: &'a mut fioxa_rpc::RPCHandleBuilder<'static>,
     ) -> Result<(), ::capnp::Error> {
-        self.0.lock().identify(req, req_handles, res, res_handles)
+        self.port
+            .lock()
+            .identify(req, req_handles, res, res_handles)
     }
 
     fn write<'a>(
         &mut self,
         req: fioxa_rpc::OwnedReader<'a, disk_capnp::write::Owned>,
-        req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
-        res: fioxa_rpc::OwnedBuilder<'a, disk_capnp::write_resp::Owned>,
+        _req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        _res: fioxa_rpc::OwnedBuilder<'a, disk_capnp::write_resp::Owned>,
+        _res_handles: &'a mut fioxa_rpc::RPCHandleBuilder<'static>,
+    ) -> Result<(), ::capnp::Error> {
+        if !self.write {
+            return Err(capnp::Error::failed("this capability cannot write".into()));
+        }
+
+        let data = req.get_data()?;
+
+        if data.is_empty() {
+            return Ok(());
+        }
+
+        if !data.len().is_multiple_of(512) {
+            return Err(capnp::Error::failed(
+                "data must be a multiple of sector size (512)".into(),
+            ));
+        }
+
+        let count = data.len() / 512;
+
+        if count as u64 + req.get_sector() > self.length {
+            return Err(capnp::Error::failed("out of bounds".into()));
+        }
+
+        self.port.lock().write(self.offset + req.get_sector(), data);
+        Ok(())
+    }
+
+    fn restrict<'a>(
+        &mut self,
+        req: fioxa_rpc::OwnedReader<'a, disk_capnp::restrict::Owned>,
+        _req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        res: fioxa_rpc::OwnedBuilder<'a, disk_capnp::restrict_resp::Owned>,
         res_handles: &'a mut fioxa_rpc::RPCHandleBuilder<'static>,
     ) -> Result<(), ::capnp::Error> {
-        self.0.lock().write(req, req_handles, res, res_handles)
+        let (offset, length) = if req.get_length() > 0 {
+            let new_offset = self.offset + req.get_offset();
+            let new_len_abs = new_offset + req.get_length();
+
+            if new_len_abs > self.offset + self.length {
+                return Err(capnp::Error::failed(
+                    "request narrowing out of bounds".into(),
+                ));
+            }
+            (new_offset, req.get_length())
+        } else {
+            (self.offset, self.length)
+        };
+
+        let port = ArcPort {
+            port: self.port.clone(),
+            offset,
+            length,
+            write: req.get_write(),
+        };
+
+        let (left, right) = Channel::new();
+        sys_process_spawn_thread(move || {
+            ServiceExecutor::from_channel(right, |c| {
+                let port = port.clone();
+                sys_process_spawn_thread(move || {
+                    RPCServer::new(c, port).run().unwrap();
+                });
+            })
+            .run()
+            .unwrap();
+        });
+
+        res_handles.add(res.init_handle(), left.into_inner());
+
+        Ok(())
     }
 }
