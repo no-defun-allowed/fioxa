@@ -172,4 +172,14 @@ impl fioxa_rpc::disk::Service for ArcPort {
     ) -> Result<(), ::capnp::Error> {
         self.0.lock().identify(req, req_handles, res, res_handles)
     }
+
+    fn write<'a>(
+        &mut self,
+        req: fioxa_rpc::OwnedReader<'a, disk_capnp::write::Owned>,
+        req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        res: fioxa_rpc::OwnedBuilder<'a, disk_capnp::write_resp::Owned>,
+        res_handles: &'a mut fioxa_rpc::RPCHandleBuilder<'static>,
+    ) -> Result<(), ::capnp::Error> {
+        self.0.lock().write(req, req_handles, res, res_handles)
+    }
 }

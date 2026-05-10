@@ -5,12 +5,12 @@ using Rpc = import "rpc.capnp";
 enum DiskMessage {
     read @0;
     identify @1;
+    write @2;
 }
 
 struct Read {
     sector @0 :UInt64;
     count @1 :UInt32;
-    handle @2 :Rpc.HandleIndex;
 }
 
 struct ReadResp {
@@ -18,4 +18,11 @@ struct ReadResp {
 }
 
 struct Identify {}
+
+struct Write {
+    sector @0 :UInt64;
+    data @1 :Data;
+}
+
+struct WriteResp {}
 

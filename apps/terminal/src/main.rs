@@ -256,6 +256,69 @@ pub fn main() {
                     }
                 }
             }
+            "write" => {
+                let Some((file, data)) = rest.split_once(" ") else {
+                    println!("bad args");
+                    continue;
+                };
+                let Some(fs_id) = current_fs else {
+                    println!("No disk selected");
+                    continue;
+                };
+
+                let fs = filesystems.lock().get(fs_id).cloned().unwrap();
+
+                let path = add_path(&cwd, file);
+
+                match stat_by_path(fs, &path).unwrap() {
+                    fioxa_rpc::fs::StatResult::None => println!("Invalid path"),
+                    fioxa_rpc::fs::StatResult::Folder(_) => println!("This is a folder"),
+                    fioxa_rpc::fs::StatResult::File(file) => {
+                        let mut file = RPCClient::<fioxa_rpc::fs_capnp::FileMessage>::new(
+                            connect_service(&file).unwrap(),
+                        );
+                        let mut req = fioxa_rpc::fs::Write::new_req();
+                        let mut b = req.init();
+                        b.set_offset(0);
+                        b.set_data(data.as_bytes());
+                        file.send(&req.build()).unwrap();
+                    }
+                }
+            }
+            "append" => {
+                let Some((file, data)) = rest.split_once(" ") else {
+                    println!("bad args");
+                    continue;
+                };
+                let Some(fs_id) = current_fs else {
+                    println!("No disk selected");
+                    continue;
+                };
+
+                let fs = filesystems.lock().get(fs_id).cloned().unwrap();
+
+                let path = add_path(&cwd, file);
+
+                match stat_by_path(fs, &path).unwrap() {
+                    fioxa_rpc::fs::StatResult::None => println!("Invalid path"),
+                    fioxa_rpc::fs::StatResult::Folder(_) => println!("This is a folder"),
+                    fioxa_rpc::fs::StatResult::File(file) => {
+                        let mut file = RPCClient::<fioxa_rpc::fs_capnp::FileMessage>::new(
+                            connect_service(&file).unwrap(),
+                        );
+                        let mut req = fioxa_rpc::fs::Size::new_req();
+                        req.init();
+                        let r = file.send(&req.build()).unwrap();
+                        let size = r.get_reply().unwrap().get_message().unwrap().get_size();
+
+                        let mut req = fioxa_rpc::fs::Write::new_req();
+                        let mut b = req.init();
+                        b.set_offset(size);
+                        b.set_data(data.as_bytes());
+                        file.send(&req.build()).unwrap();
+                    }
+                }
+            }
             "exec" => {
                 let Some(fs_id) = current_fs else {
                     println!("No disk selected");

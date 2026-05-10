@@ -48,6 +48,67 @@ unsafe fn get_phys_addr_from_vaddr(address: u64) -> Option<u64> {
     }
 }
 
+unsafe fn setup_prdts(
+    cmd_table: &mut HBACommandTable<PRDT_LENGTH>,
+    vstart: *const (),
+    vlen: u32,
+) -> u16 {
+    let mut ptr_addr = vstart as u64;
+    let left_align_size = (ptr_addr & 0xFFF) as u32;
+    let mut bytes_to_read = vlen;
+    let mut prdt_length = 0u16;
+    if left_align_size > 0 {
+        // Align ptr on prev boundary
+        ptr_addr &= !0xFFF;
+
+        let phys_addr = unsafe { get_phys_addr_from_vaddr(ptr_addr).unwrap() };
+
+        // Set the offset back on, since page offsets arn't supper pain yet (Only 4kb pages)
+        cmd_table.prdt_entry[0].set_data_base_address(phys_addr + left_align_size as u64);
+
+        cmd_table.prdt_entry[0].set_byte_count(0xFFF - left_align_size);
+        // cmd_table.prdt_entry[0].set_interrupt_on_completion(true);
+        prdt_length = 1;
+        // Might have requested less than 0x1000 bytes
+        bytes_to_read = bytes_to_read.saturating_sub(0x1000 - left_align_size);
+        ptr_addr += 0x1000;
+    }
+
+    while bytes_to_read > 0x1000 {
+        let phys_addr = unsafe { get_phys_addr_from_vaddr(ptr_addr).unwrap() };
+        cmd_table.prdt_entry[prdt_length as usize].set_data_base_address(phys_addr);
+        // Read read of bytes
+        cmd_table.prdt_entry[prdt_length as usize].set_byte_count(0xFFF);
+        bytes_to_read -= 0x1000;
+        ptr_addr += 0x1000;
+        prdt_length += 1;
+    }
+
+    if bytes_to_read > 0 {
+        let phys_addr = unsafe { get_phys_addr_from_vaddr(ptr_addr).unwrap() };
+
+        cmd_table.prdt_entry[prdt_length as usize].set_data_base_address(phys_addr);
+        // Read read of bytes
+        cmd_table.prdt_entry[prdt_length as usize].set_byte_count(bytes_to_read - 1);
+        prdt_length += 1;
+    }
+
+    prdt_length
+}
+
+fn set_cmd_fis_lba(cmd_fis: &mut FisRegH2D, sector: u64) {
+    let sector_low = sector as u32;
+    let sector_high = (sector >> 32) as u32;
+
+    cmd_fis.set_lba0(sector_low as u8);
+    cmd_fis.set_lba1((sector_low >> 8) as u8);
+    cmd_fis.set_lba2((sector_low >> 16) as u8);
+
+    cmd_fis.set_lba3(sector_high as u8);
+    cmd_fis.set_lba4((sector_high >> 8) as u8);
+    cmd_fis.set_lba5((sector_high >> 16) as u8);
+}
+
 impl Port {
     pub fn new(port: &'static mut HBAPort) -> Self {
         unsafe {
@@ -121,93 +182,7 @@ impl Port {
         while port.cmd_sts.read() & HBA_PX_CMD_FR > 0 {}
     }
 
-    fn read_into_buf(&mut self, sector: usize, sector_count: u32, buffer: &mut [u8]) -> Option<()> {
-        if sector_count as usize > MAX_SECTORS {
-            todo!("Sectors count of {MAX_SECTORS} is max atm")
-        }
-
-        assert!(
-            buffer.len() >= sector_count as usize * 512,
-            "Buffer is not large enough"
-        );
-
-        let sector_low = sector as u32;
-        let sector_high = (sector >> 32) as u32;
-
-        let slot = self.find_slot() as usize;
-
-        let cmd_list = &mut self.cmd_list[slot];
-        cmd_list.set_command_fis_length((size_of::<FisRegH2D>() / 4) as u8);
-        cmd_list.set_write(false); // This is read
-
-        let cmd_table = &mut self.cmd_tables[slot];
-
-        let mut prdt_length = 0;
-
-        let mut ptr_addr = buffer.as_ptr() as u64;
-
-        let left_align_size = (ptr_addr & 0xFFF) as u32;
-        let mut bytes_to_read = 512 * sector_count;
-
-        if left_align_size > 0 {
-            // Align ptr on prev boundary
-            ptr_addr &= !0xFFF;
-
-            let phys_addr = unsafe { get_phys_addr_from_vaddr(ptr_addr).unwrap() };
-
-            // Set the offset back on, since page offsets arn't supper pain yet (Only 4kb pages)
-            cmd_table.prdt_entry[0].set_data_base_address(phys_addr + left_align_size as u64);
-
-            cmd_table.prdt_entry[0].set_byte_count(0xFFF - left_align_size);
-            // cmd_table.prdt_entry[0].set_interrupt_on_completion(true);
-            prdt_length = 1;
-            // Might have requested less than 0x1000 bytes
-            bytes_to_read = bytes_to_read.saturating_sub(0x1000 - left_align_size);
-            ptr_addr += 0x1000;
-        }
-
-        while bytes_to_read > 0x1000 {
-            let phys_addr = unsafe { get_phys_addr_from_vaddr(ptr_addr).unwrap() };
-            cmd_table.prdt_entry[prdt_length].set_data_base_address(phys_addr);
-            // Read read of bytes
-            cmd_table.prdt_entry[prdt_length].set_byte_count(0xFFF);
-            bytes_to_read -= 0x1000;
-            ptr_addr += 0x1000;
-            prdt_length += 1;
-        }
-
-        if bytes_to_read > 0 {
-            let phys_addr = unsafe { get_phys_addr_from_vaddr(ptr_addr).unwrap() };
-
-            cmd_table.prdt_entry[prdt_length].set_data_base_address(phys_addr);
-            // Read read of bytes
-            cmd_table.prdt_entry[prdt_length].set_byte_count(bytes_to_read - 1);
-            prdt_length += 1;
-        }
-
-        cmd_list.set_prdt_length(prdt_length as u16);
-
-        let cmd_fis = unsafe { &mut *(cmd_table.command_fis.as_mut_ptr() as *mut FisRegH2D) };
-        cmd_fis.set_fis_type(FISTYPE::REGH2D as u8);
-        cmd_fis.set_control(1); // COMMAND
-
-        const ATA_CMD_READ_DMA_EX: u8 = 0x25;
-        cmd_fis.set_command(ATA_CMD_READ_DMA_EX);
-        cmd_fis.set_command_control(true);
-
-        cmd_fis.set_lba0(sector_low as u8);
-        cmd_fis.set_lba1((sector_low >> 8) as u8);
-        cmd_fis.set_lba2((sector_low >> 16) as u8);
-
-        cmd_fis.set_lba3(sector_high as u8);
-        cmd_fis.set_lba4((sector_high >> 8) as u8);
-        cmd_fis.set_lba5((sector_high >> 16) as u8);
-
-        cmd_fis.set_device_register(1 << 6); // LBA mode
-
-        cmd_fis.set_countl((sector_count & 0xFF) as u8);
-        cmd_fis.set_counth(((sector_count >> 8) & 0xFF) as u8);
-
+    fn issue(&mut self, slot: u8) -> Option<()> {
         let mut spin = 100_000;
 
         while ((self.hba_port.task_file_data.read() & (0x80 | 0x08)) > 0) && spin > 0 {
@@ -238,6 +213,86 @@ impl Port {
 
         Some(())
     }
+
+    fn read_into_buf(&mut self, sector: u64, sector_count: u32, buffer: &mut [u8]) -> Option<()> {
+        if sector_count as usize > MAX_SECTORS {
+            todo!("Sectors count of {MAX_SECTORS} is max atm")
+        }
+
+        assert!(
+            buffer.len() >= sector_count as usize * 512,
+            "Buffer is not large enough"
+        );
+
+        let slot = self.find_slot();
+
+        let cmd_list = &mut self.cmd_list[slot as usize];
+        cmd_list.set_command_fis_length((size_of::<FisRegH2D>() / 4) as u8);
+        cmd_list.set_write(false); // This is read
+
+        let cmd_table = &mut self.cmd_tables[slot as usize];
+
+        let prdt_length =
+            unsafe { setup_prdts(cmd_table, buffer.as_ptr().cast(), sector_count * 512) };
+
+        cmd_list.set_prdt_length(prdt_length);
+
+        let cmd_fis = unsafe { &mut *(cmd_table.command_fis.as_mut_ptr() as *mut FisRegH2D) };
+        cmd_fis.set_fis_type(FISTYPE::REGH2D as u8);
+        cmd_fis.set_control(1); // COMMAND
+
+        const ATA_CMD_READ_DMA_EX: u8 = 0x25;
+        cmd_fis.set_command(ATA_CMD_READ_DMA_EX);
+        cmd_fis.set_command_control(true);
+
+        set_cmd_fis_lba(cmd_fis, sector);
+        cmd_fis.set_device_register(1 << 6); // LBA mode
+
+        cmd_fis.set_countl((sector_count & 0xFF) as u8);
+        cmd_fis.set_counth(((sector_count >> 8) & 0xFF) as u8);
+
+        self.issue(slot)
+    }
+
+    fn write_from_buf(&mut self, sector: u64, sector_count: u32, buffer: &[u8]) -> Option<()> {
+        if sector_count as usize > MAX_SECTORS {
+            todo!("Sectors count of {MAX_SECTORS} is max atm")
+        }
+
+        assert!(
+            buffer.len() >= sector_count as usize * 512,
+            "Buffer is not large enough"
+        );
+
+        let slot = self.find_slot();
+
+        let cmd_list = &mut self.cmd_list[slot as usize];
+        cmd_list.set_command_fis_length((size_of::<FisRegH2D>() / 4) as u8);
+        cmd_list.set_write(true); // This is write
+
+        let cmd_table = &mut self.cmd_tables[slot as usize];
+
+        let prdt_length =
+            unsafe { setup_prdts(cmd_table, buffer.as_ptr().cast(), sector_count * 512) };
+
+        cmd_list.set_prdt_length(prdt_length);
+
+        let cmd_fis = unsafe { &mut *(cmd_table.command_fis.as_mut_ptr() as *mut FisRegH2D) };
+        cmd_fis.set_fis_type(FISTYPE::REGH2D as u8);
+        cmd_fis.set_control(1); // COMMAND
+
+        const ATA_CMD_WRITE_DMA_EX: u8 = 0x35;
+        cmd_fis.set_command(ATA_CMD_WRITE_DMA_EX);
+        cmd_fis.set_command_control(true);
+
+        set_cmd_fis_lba(cmd_fis, sector);
+        cmd_fis.set_device_register(1 << 6); // LBA mode
+
+        cmd_fis.set_countl((sector_count & 0xFF) as u8);
+        cmd_fis.set_counth(((sector_count >> 8) & 0xFF) as u8);
+
+        self.issue(slot)
+    }
 }
 
 impl fioxa_rpc::disk::Service for Port {
@@ -262,7 +317,7 @@ impl fioxa_rpc::disk::Service for Port {
         while read_head < read_tail {
             let count = (read_tail - read_head).min(MAX_SECTORS);
             self.read_into_buf(
-                sector + read_head,
+                (sector + read_head) as u64,
                 count as u32,
                 &mut buffer[read_head * 512..(read_head + count) * 512],
             )
@@ -319,33 +374,44 @@ impl fioxa_rpc::disk::Service for Port {
         cmd_fis.set_countl(0);
         cmd_fis.set_command_control(true);
 
-        let mut spin = 0;
+        self.issue(slot as u8).unwrap();
+        Ok(())
+    }
 
-        while ((self.hba_port.task_file_data.read() & (0x80 | 0x08)) > 0) && spin < 1000000 {
-            spin += 1;
-        }
-        if spin == 1000000 {
-            todo!("Port is hung");
+    fn write<'a>(
+        &mut self,
+        req: fioxa_rpc::OwnedReader<'a, disk_capnp::write::Owned>,
+        _req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        _res: fioxa_rpc::OwnedBuilder<'a, disk_capnp::write_resp::Owned>,
+        _res_handles: &'a mut fioxa_rpc::RPCHandleBuilder<'static>,
+    ) -> Result<(), ::capnp::Error> {
+        let data = req.get_data()?;
+
+        if data.is_empty() {
+            return Ok(());
         }
 
-        self.hba_port.command_issue.write(1 << slot);
+        if !data.len().is_multiple_of(512) {
+            return Err(capnp::Error::failed(
+                "data must be a multiple of sector size (512)".into(),
+            ));
+        }
 
-        let mut i = 100_000;
-        while i > 0 {
-            // yield_now();
-            // println!("Reading...: {:b}", self.hba_port.command_issue.read());
-            if self.hba_port.command_issue.read() & (1 << slot) == 0 {
-                break;
-            }
-            if self.hba_port.interrupt_status.read() & (1 << 30) > 0 {
-                debug!("Error reading");
-                break;
-            }
-            i -= 1;
+        let mut write_head = 0usize;
+        let sector = req.get_sector() as usize;
+        let write_tail = data.len() / 512;
+
+        while write_head < write_tail {
+            let count = (write_tail - write_head).min(MAX_SECTORS);
+            self.write_from_buf(
+                (sector + write_head) as u64,
+                count as u32,
+                &data[write_head * 512..(write_head + count) * 512],
+            )
+            .unwrap();
+            write_head += count;
         }
-        if i == 0 {
-            todo!("Failed to read identify")
-        }
+
         Ok(())
     }
 }

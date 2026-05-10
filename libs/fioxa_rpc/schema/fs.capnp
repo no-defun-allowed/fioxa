@@ -10,6 +10,7 @@ enum FolderMessage {
 enum FileMessage {
     size @0;
     read @1;
+    write @2;
 }
 
 enum FileType {
@@ -51,4 +52,11 @@ struct FileRead {
 struct FileData {
     data @0 :Data;
 }
+
+struct FileWrite {
+    offset @0 :UInt64;
+    data @1 :Data;
+}
+
+struct FileWriteResp {}
 

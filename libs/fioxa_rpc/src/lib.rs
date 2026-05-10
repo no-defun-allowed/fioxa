@@ -29,6 +29,7 @@ pub mod disk {
     crate::generate_rpc!(crate::disk_capnp::DiskMessage, Service;
         Read @ Read @ read(crate::disk_capnp::read::Owned) -> crate::disk_capnp::read_resp::Owned;
         Identify @ Identify @ identify(crate::disk_capnp::identify::Owned) -> crate::disk_capnp::read_resp::Owned;
+        Write @ Write @ write(crate::disk_capnp::write::Owned) -> crate::disk_capnp::write_resp::Owned;
     );
 }
 

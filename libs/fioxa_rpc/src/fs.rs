@@ -1,5 +1,3 @@
-use core::fmt::Write;
-
 use alloc::{borrow::ToOwned, string::String, vec::Vec};
 use kernel_userspace::{channel::Channel, sys::types::SyscallError};
 
@@ -17,6 +15,7 @@ crate::generate_rpc!(crate::fs_capnp::FolderMessage, FolderService;
 crate::generate_rpc!(fs_capnp::FileMessage, FileService;
     Size @ Size @ size(fs_capnp::file_size::Owned) -> fs_capnp::file_size_read::Owned;
     Read @ Read @ read(fs_capnp::file_read::Owned) -> fs_capnp::file_data::Owned;
+    Write @ Write @ write(fs_capnp::file_write::Owned) -> fs_capnp::file_write_resp::Owned;
 );
 
 pub fn add_path(folder: &str, file: &str) -> String {
@@ -78,7 +77,7 @@ pub fn stat_by_path(root: Channel, path: &str) -> Result<StatResult, SyscallErro
 }
 
 pub fn tree(
-    writer: &mut impl Write,
+    writer: &mut impl core::fmt::Write,
     root: &Channel,
     prefix: String,
 ) -> Result<(), core::fmt::Error> {

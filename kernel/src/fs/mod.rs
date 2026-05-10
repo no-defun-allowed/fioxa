@@ -44,6 +44,21 @@ impl FSPartitionDisk {
         d.send(&req.build()).unwrap()
     }
 
+    fn write(
+        &self,
+        sector: u64,
+        data: &[u8],
+    ) -> RPCMessageReturn<fioxa_rpc::disk_capnp::write_resp::Owned> {
+        assert!(sector + data.len().div_ceil(512) as u64 <= self.partition_length);
+        let mut req = fioxa_rpc::disk::Write::new_req();
+        let mut b = req.init();
+        b.set_sector(self.partition_offset + sector);
+        b.set_data(data);
+
+        let mut d = self.backing_disk.lock();
+        d.send(&req.build()).unwrap()
+    }
+
     fn narrow(&self, start: u64, length: u64) -> Self {
         assert!(start + length <= self.partition_length);
 
