@@ -8,9 +8,9 @@ extern crate userspace_slaballoc;
 
 mod fs;
 
-use alloc::{format, vec};
-use alloc::vec::Vec;
 use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use alloc::{format, vec};
 use base64::prelude::*;
 use itertools::Itertools;
 
@@ -27,7 +27,11 @@ fn draw(i: &Image) {
     let Image { w, h, .. } = i;
     let mut first = true;
     for chunk in &encoded.chars().chunks(4096) {
-        let metadata = if first { format!("a=T,f=32,s={w},v={h},") } else { "".to_string() };
+        let metadata = if first {
+            format!("a=T,f=32,s={w},v={h},")
+        } else {
+            "".to_string()
+        };
         first = false;
         let c: String = chunk.collect();
         print!("\x1B_G{metadata}m=1;{c}\x1B\\");
@@ -40,7 +44,11 @@ fn decode(data: &[u8]) -> Image {
     let mut buffer = vec![0; header.required_bytes_rgba8bpc()];
     let mut image = minipng::decode_png(data, &mut buffer).expect("bad PNG");
     image.convert_to_rgba8bpc().expect("bad convert??");
-    Image { w: image.width(), h: image.height(), data: image.pixels().to_vec() }
+    Image {
+        w: image.width(),
+        h: image.height(),
+        data: image.pixels().to_vec(),
+    }
 }
 
 pub fn main() {
@@ -51,7 +59,9 @@ pub fn main() {
     fs::probe_filesystems();
     let mut file = fs::File::open(&pathname).expect("were file");
     let len = file.len().expect("could not len");
-    let data = file.read(0, len).expect("could not read");
+    let data = file
+        .read(0, len.try_into().unwrap())
+        .expect("could not read");
     let i = decode(&data);
     draw(&i);
 }
