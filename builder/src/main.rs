@@ -23,6 +23,7 @@ const SYSTEM_EFI_VARS: &str = "/usr/share/OVMF/OVMF_VARS.fd";
 const TO_BUILD: &[(&str, Option<&str>, &str)] = &[
     ("bootloader", None, "EFI/BOOT/BOOTx64.efi"),
     ("apps", Some("calc"), "apps/calc"),
+    ("apps", Some("kitty"), "apps/kitty"),
     ("apps", Some("net"), "apps/net"),
     ("apps", Some("test"), "apps/test"),
     ("apps", Some("test_capnp"), "apps/test_capnp"),
@@ -50,6 +51,8 @@ fn main() -> Result<()> {
 
     copy("assets/startup.nsh", "fioxa/startup.nsh")?;
     copy("assets/zap-light16.psf", "fioxa/font.psf")?;
+    copy("assets/maddyqueen.png", "fioxa/maddyqueen.png")?;
+    copy("assets/baddyqueen.png", "fioxa/baddyqueen.png")?;
 
     let release = args().any(|a| a == "--release");
     let native = args().any(|a| a == "--native");

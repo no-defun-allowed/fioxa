@@ -1,0 +1,16 @@
+[package]
+name = "kitty"
+version = "0.1.0"
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
+capnp = { version = "0.25.3", default-features = false, features = ["alloc"] }
+fioxa_rpc.workspace = true
+itertools = { version = "0.14.0", default-features = false, features = ["use_alloc"] }
+kernel_userspace.workspace = true
+minipng = "1.0.0"
+userspace_slaballoc.workspace = true
+userspace.workspace = true
