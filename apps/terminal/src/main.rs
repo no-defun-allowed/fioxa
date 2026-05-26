@@ -133,8 +133,8 @@ pub fn main() {
                         println!("Disks:");
                         let fs = filesystems.lock();
                         for (i, f) in fs.iter().enumerate() {
-                            use crate::alloc::string::ToString;
-                            let name = fioxa_rpc::fs::describe(f).unwrap_or("???".to_string());
+                            let name = fioxa_rpc::fs::describe(f);
+                            let name = name.as_deref().unwrap_or("???");
                             println!("  {i}: {name}");
                         }
                     }
