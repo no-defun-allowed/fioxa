@@ -10,6 +10,7 @@ use crate::{
 crate::generate_rpc!(crate::fs_capnp::FolderMessage, FolderService;
     GetChildren @ GetChildren @ get_children(fs_capnp::folder_get_children::Owned) -> fs_capnp::folder_got_children::Owned;
     Open @ FolderOpen @ open(fs_capnp::folder_open::Owned) -> fs_capnp::folder_opened::Owned;
+    Describe @ FolderDescribe @ describe(fs_capnp::folder_describe::Owned) -> fs_capnp::folder_info::Owned;
 );
 
 crate::generate_rpc!(fs_capnp::FileMessage, FileService;
@@ -74,6 +75,15 @@ pub fn stat_by_path(root: Channel, path: &str) -> Result<StatResult, SyscallErro
         };
     }
     Ok(root)
+}
+
+pub fn describe(root: &Channel) -> Result<String, SyscallError> {
+    let mut client = RPCClient::<fs_capnp::FolderMessage>::new(connect_service(&root)?);
+    let mut req = FolderDescribe::new_req();
+    req.init();
+    let r = client.send(&req.build()).unwrap();
+    let mut r = r.get_reply().unwrap();
+    Ok(r.get_message().unwrap().get_name().unwrap().to_string().unwrap())
 }
 
 pub fn tree(

@@ -832,6 +832,17 @@ impl fioxa_rpc::fs::FolderService for FatFolder {
 
         Ok(())
     }
+
+    fn describe<'a>(
+        &mut self,
+        _req: fioxa_rpc::OwnedReader<'a, fs_capnp::folder_describe::Owned>,
+        _req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
+        mut res: fioxa_rpc::OwnedBuilder<'a, fs_capnp::folder_info::Owned>,
+        _res_handles: &'a mut fioxa_rpc::RPCHandleBuilder<'static>,
+    ) -> Result<(), ::capnp::Error> {
+        res.set_name("fat");
+        Ok(())
+    }
 }
 
 #[derive(Clone)]

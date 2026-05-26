@@ -130,7 +130,13 @@ pub fn main() {
                         }
                     }
                     Err(_) => {
-                        println!("Disks: 0..{fs_len}")
+                        println!("Disks:");
+                        let fs = filesystems.lock();
+                        for (i, f) in fs.iter().enumerate() {
+                            use crate::alloc::string::ToString;
+                            let name = fioxa_rpc::fs::describe(f).unwrap_or("???".to_string());
+                            println!("  {i}: {name}");
+                        }
                     }
                 }
             }

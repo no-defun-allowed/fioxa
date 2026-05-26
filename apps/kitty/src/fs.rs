@@ -44,6 +44,7 @@ type FileClient = RPCClient<fioxa_rpc::fs_capnp::FileMessage>;
 pub struct File(FileClient);
 
 #[derive(Debug)]
+// Solely using this for Debug printing counts the fields as dead code. Boo.
 #[allow(dead_code)]
 pub enum Error {
     Capnp(capnp::Error),

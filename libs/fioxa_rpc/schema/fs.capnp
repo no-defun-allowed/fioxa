@@ -5,6 +5,7 @@ using Rpc = import "rpc.capnp";
 enum FolderMessage {
     getChildren @0;
     open @1;
+    describe @2;
 }
 
 enum FileMessage {
@@ -36,6 +37,12 @@ struct FolderOpen {
 struct FolderOpened {
     type @0 :FileType;
     capability @1 :Rpc.HandleIndex;
+}
+
+struct FolderDescribe {}
+
+struct FolderInfo {
+    name @0 :Text;
 }
 
 struct FileSize {}
