@@ -39,16 +39,16 @@ fn draw(i: &Image) {
     print!("\x1B_Gm=0;\x1B\\");
 }
 
-fn decode(data: &[u8]) -> Image {
-    let header = minipng::decode_png_header(data).expect("bad PNG");
+fn decode(data: &[u8]) -> minipng::Result<Image> {
+    let header = minipng::decode_png_header(data)?;
     let mut buffer = vec![0; header.required_bytes_rgba8bpc()];
-    let mut image = minipng::decode_png(data, &mut buffer).expect("bad PNG");
-    image.convert_to_rgba8bpc().expect("bad convert??");
-    Image {
+    let mut image = minipng::decode_png(data, &mut buffer)?;
+    image.convert_to_rgba8bpc()?;
+    Ok(Image {
         w: image.width(),
         h: image.height(),
         data: image.pixels().to_vec(),
-    }
+    })
 }
 
 pub fn main() {
@@ -62,6 +62,6 @@ pub fn main() {
     let data = file
         .read(0, len.try_into().unwrap())
         .expect("could not read");
-    let i = decode(&data);
+    let i = decode(&data).expect("could not parse PNG");
     draw(&i);
 }

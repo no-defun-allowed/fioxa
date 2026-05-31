@@ -26,6 +26,7 @@ define_syscalls! {
     RawSysUnmap @ raw_sys_unmap(address: vaddr_t, length: usize),
     RawSysPid @ raw_sys_pid(pid: *mut pid_t),
     RawSysLog @ raw_sys_log(level: u32, target: *const u8, target_len: usize, message: *const u8, message_len: usize),
+    RawSysSetFs @ raw_sys_set_fs(val: u64),
 
     // handle
     RawSysHandleDrop @ raw_sys_handle_drop(handle: hid_t),

@@ -104,6 +104,11 @@ pub fn sys_log(level: u32, target: &str, message: &str) {
     }
 }
 
+#[inline]
+pub fn sys_set_fs(val: u64) {
+    unsafe { raw_sys_set_fs(val); }
+}
+
 // handle
 
 /// Drops a handle

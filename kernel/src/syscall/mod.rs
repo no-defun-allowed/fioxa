@@ -446,6 +446,17 @@ impl DispatchSyscall for SyscallContext<'_> {
         Ok(())
     }
 
+    fn raw_sys_set_fs(&mut self, req: &RawSysSetFs) -> SyscallResult {
+        info!("set_fs {}", req.val);
+
+        let mut sched = self.thread.sched().lock();
+        sched.fs_value = req.val;
+
+        unsafe { crate::assembly::set_fs(req.val); }
+        
+        Ok(())
+    }
+
     fn raw_sys_handle_drop(&mut self, req: &RawSysHandleDrop) -> SyscallResult {
         let handle = kunwrap!(Hid::from_raw(req.handle));
 

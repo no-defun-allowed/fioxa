@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["calc", "kitty", "net", "terminal", "test", "test_capnp"]
+members = ["calc", "kitty", "net", "terminal", "test", "test_capnp", "test_fs_reg"]
 
 [workspace.package]
 edition = "2024"

@@ -419,6 +419,7 @@ impl Thread {
                 kstack_top: VirtAddr::from_ptr((kbase + KSTACK_SIZE) as *const ()),
                 cr3_page: process.memory.lock().region.get_cr3() as u64,
                 sse_state: None,
+                fs_value: 0,
             }),
         });
 
@@ -488,6 +489,7 @@ pub struct ThreadSched {
     pub kstack_top: VirtAddr,
     pub cr3_page: u64,
     pub sse_state: Option<Box<[u8]>>,
+    pub fs_value: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -13,3 +13,7 @@ pub unsafe fn wrmsr(register: u32, value: u64) {
         );
     }
 }
+
+pub unsafe fn set_fs(value: u64) {
+    unsafe { wrmsr(0xC0000100, value) }
+}

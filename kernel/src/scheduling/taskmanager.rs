@@ -24,7 +24,7 @@ use x86_64::{
 };
 
 use crate::{
-    assembly::{registers::SavedTaskState, wrmsr},
+    assembly::{registers::SavedTaskState, wrmsr, set_fs},
     cpu_localstorage::{CPULocalStorage, CPULocalStorageRW},
     gdt::{KERNEL_CODE_SELECTOR, USER_CODE_SELECTOR},
     mutex::{Spinlock, SpinlockGuard},
@@ -477,6 +477,7 @@ unsafe fn sched_run_tick(task: &Thread, sched: &mut ThreadSched, sse: &SSESave) 
             }
             SSESaveMethod::XSaves => _xrstors64(sse_region.as_ptr(), u64::MAX),
         }
+        set_fs(sched.fs_value);
 
         core::arch::asm!(
             "push rbx",
