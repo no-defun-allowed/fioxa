@@ -8,17 +8,15 @@ extern crate userspace_slaballoc;
 
 init_userspace!(main);
 
-use kernel_sys::{syscall::{sys_set_fs, sys_yield}};
-
-fn read_fs() -> u64 {
-    let result;
-    unsafe { core::arch::asm!("mov {}, fs", out(reg) result) };
-    result
-}
+use kernel_sys::{syscall::{sys_set_fs, sys_sleep, sys_yield}};
+use core::time::Duration;
 
 pub fn main() {
-    sys_set_fs(42);
-    println!("before yield: fs = {}", read_fs());
+    let magic_number = 0x3140;
+    sys_set_fs(magic_number);
     sys_yield();
-    println!(" after yield: fs = {}", read_fs());
+    println!("I think I shall cause a fault at {magic_number:x} on purpose");
+    sys_sleep(Duration::from_secs(1));
+    let _x: u64;
+    unsafe { core::arch::asm!("mov {}, fs:0", out(reg) _x); }
 }

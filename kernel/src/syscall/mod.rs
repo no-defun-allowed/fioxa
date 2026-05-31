@@ -447,8 +447,6 @@ impl DispatchSyscall for SyscallContext<'_> {
     }
 
     fn raw_sys_set_fs(&mut self, req: &RawSysSetFs) -> SyscallResult {
-        info!("set_fs {}", req.val);
-
         let mut sched = self.thread.sched().lock();
         sched.fs_value = req.val;
 
