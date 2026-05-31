@@ -120,6 +120,7 @@ impl FatExtendedBootRecord {
     }
 }
 
+#[allow(clippy::upper_case_acronyms)]
 pub struct FAT {
     pub bios_parameter_block: BiosParameterBlock,
     pub fat_ebr: FatExtendedBootRecord,
@@ -449,13 +450,10 @@ impl FAT {
         let clusters = ClusterIterator::new(self, start_cluster);
         for cluster in clusters {
             let sector = self.get_start_sector_of_cluster(cluster);
-            for sector in sector..sector + 16 {
+            for sector in sector..sector + sectors {
                 let r = self.read_disk_cache(sector, |buf| {
                     let directory_entry = unsafe {
-                        core::slice::from_raw_parts(
-                            buf.as_ptr() as *const DirectoryEntry,
-                            16 * sectors as usize,
-                        )
+                        core::slice::from_raw_parts(buf.as_ptr() as *const DirectoryEntry, 16)
                     };
 
                     f(sector, directory_entry)
@@ -718,7 +716,6 @@ pub fn read_bios_block(mut disk: RPCClient<fioxa_rpc::disk_capnp::DiskMessage>) 
                 },
             )
             .run()
-            .unwrap();
         });
     })
     .run()
@@ -794,7 +791,6 @@ impl fioxa_rpc::fs::FolderService for FatFolder {
                                         sys_process_spawn_thread(move || {
                                             RPCServer::new(chan, FatFolder { fat, file, cache })
                                                 .run()
-                                                .unwrap();
                                         });
                                     })
                                     .run()
@@ -808,9 +804,7 @@ impl fioxa_rpc::fs::FolderService for FatFolder {
                                     ServiceExecutor::from_channel(r, |chan| {
                                         let fat = fat.clone();
                                         sys_process_spawn_thread(move || {
-                                            RPCServer::new(chan, FatFile { fat, file })
-                                                .run()
-                                                .unwrap();
+                                            RPCServer::new(chan, FatFile { fat, file }).run()
                                         });
                                     })
                                     .run()
