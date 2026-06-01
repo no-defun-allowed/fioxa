@@ -1,0 +1,13 @@
+[package]
+name = "unix_kit"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+kernel_sys.workspace = true
+kernel_userspace.workspace = true
+userspace_slaballoc.workspace = true
+userspace = { workspace = true, features = ["console"] }
+
+[lib]
+crate-type = ["staticlib"]

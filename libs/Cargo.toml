@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["fioxa_rpc","input", "kernel_sys", "kernel_userspace", "userspace", "userspace_slaballoc"]
+members = ["fioxa_rpc","input", "kernel_sys", "kernel_userspace", "unix_kit", "userspace", "userspace_slaballoc"]
 
 [workspace.package]
 edition = "2024"
