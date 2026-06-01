@@ -6,7 +6,11 @@ extern crate userspace;
 extern crate userspace_slaballoc;
 
 use core::ffi::{c_char, c_int, CStr};
-use kernel_sys::{syscall::{sys_exit, sys_set_fs}};
+use core::ptr::null_mut;
+use kernel_sys::{
+    syscall::{sys_exit, sys_map, sys_unmap, sys_set_fs},
+    types::VMMapFlags,
+};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fioxa_log(message: *const c_char) {
@@ -32,6 +36,24 @@ pub extern "C" fn fioxa_exit(status: c_int) -> ! {
         println!("Exited with status {status}");
     }
     sys_exit();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fioxa_map(size: usize, result: *mut *mut ()) -> c_int {
+    let addr = unsafe {
+        sys_map(None, VMMapFlags::USERSPACE | VMMapFlags::WRITEABLE, null_mut(), size)
+    };
+    if let Ok(addr) = addr {
+        unsafe { *result = addr };
+        0
+    } else {
+        -1
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fioxa_unmap(addr: *mut (), size: usize) -> c_int {
+    if unsafe { sys_unmap(addr, size) }.is_ok() { 0 } else { -1 }
 }
 
 #[unsafe(no_mangle)]
