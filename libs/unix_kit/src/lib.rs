@@ -12,6 +12,10 @@ use kernel_sys::{
     types::VMMapFlags,
 };
 
+// Constants we need to fudge some syscalls with.
+const ENOENT: c_int = 2;
+const ENOTTY: c_int = 25;
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fioxa_log(message: *const c_char) {
     let c_str: &CStr = unsafe { CStr::from_ptr(message) };
@@ -38,6 +42,8 @@ pub extern "C" fn fioxa_exit(status: c_int) -> ! {
     sys_exit();
 }
 
+// Memory
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fioxa_map(size: usize, result: *mut *mut ()) -> c_int {
     let addr = unsafe {
@@ -57,16 +63,31 @@ pub extern "C" fn fioxa_unmap(addr: *mut (), size: usize) -> c_int {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fioxa_open(_name: *const c_char, _flags: c_int, _mode: c_int, _fd: *mut c_int) -> c_int {
-    unimplemented!();
+pub extern "C" fn fioxa_set_fs_reg(addr: u64) { sys_set_fs(addr) }
+
+// I/O
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fioxa_open(name: *const c_char, _flags: c_int, _mode: c_int, _fd: *mut c_int) -> c_int {
+    fioxa_log(name);
+    ENOENT
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fioxa_set_fs_reg(addr: u64) { sys_set_fs(addr) }
+pub extern "C" fn fioxa_read(fd: c_int, _buf: *mut u8, count: usize, _bytes_read: *mut usize) -> c_int {
+    unimplemented!("read {fd} {count}");
+}
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fioxa_read(_fd: c_int, _buf: *mut u8, _count: usize, _bytes_read: *mut usize) -> c_int {
-    unreachable!();
+pub extern "C" fn fioxa_seek(fd: c_int, off: i64, whence: c_int, new_offset: *mut i64) -> c_int {
+    unsafe { *new_offset = off };
+    println!("pretending to seek {fd} {off} {whence}");
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fioxa_isatty(fd: c_int) -> c_int {
+    if fd <= 2 { 0 } else { ENOTTY }
 }
 
 #[unsafe(no_mangle)]
