@@ -9,6 +9,7 @@ use spin::Lazy;
 
 // Constants we need to fudge some syscalls with.
 const ENOENT: c_int = 2;
+const EIO: c_int = 5;
 const EBADF: c_int = 9;
 const EINVAL: c_int = 22;
 const ENOTTY: c_int = 25;
@@ -38,8 +39,24 @@ impl Input {
 
 impl File for Input {
     fn is_a_tty(&self) -> bool { true }
-    fn read(&mut self, _buf: *mut u8, _count: usize) -> Result<usize, c_int> {
-        unimplemented!();
+    fn read(&mut self, buf: *mut u8, count: usize) -> Result<usize, c_int> {
+        while self.buffer.is_empty() {
+            let mut new = vec![];
+            let Ok(_) = self.chan.read::<0>(&mut new, true, true) else {
+                return Err(EIO);
+            };
+            self.buffer.append(&mut new);
+        }
+        let len = self.buffer.len().max(count);
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                self.buffer.as_ptr(),
+                buf,
+                len,
+            );
+        }
+        self.buffer.drain(0..len);
+        Ok(len)
     }
     fn seek(&mut self, _offset: i64, _by: Seek) -> Result<i64, c_int> { Err(ESPIPE) }
     fn write(&mut self, _buf: *const u8, _count: usize) -> Result<(), c_int> { Err(EBADF) }
@@ -87,7 +104,7 @@ pub extern "C" fn fioxa_close(fd: c_int) -> c_int {
     let Ok(fd): Result<usize, _> = fd.try_into() else { return EBADF };
     let mut fds = FILE_DESCRIPTORS.lock();
      match fds.get_mut(fd) {
-         Some(Some(file)) => {
+         Some(Some(_)) => {
              fds[fd] = None;
              0
          }
@@ -97,6 +114,7 @@ pub extern "C" fn fioxa_close(fd: c_int) -> c_int {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fioxa_open(_name: *const c_char, _flags: c_int, _mode: c_int, fd: *mut c_int) -> c_int {
+    return ENOENT;
     let file = unimplemented!();
     // Add it to the FDs
     let mut fds = FILE_DESCRIPTORS.lock();
