@@ -1,8 +1,9 @@
 // I/O stuff
 
-use alloc::{boxed::Box, vec, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, string::String, vec, vec::Vec};
 use core::ffi::{c_char, c_int};
 use core::convert::TryInto;
+use fioxa_rpc::{client::RPCClient, fs::{Read, Size}, fs_capnp::FileMessage};
 use kernel_userspace::{channel::Channel, mutex::Mutex, sys::types::SyscallError};
 use userspace::print::Writer;
 use spin::Lazy;
@@ -29,33 +30,72 @@ trait File: Send {
     fn write(&mut self, buf: *const u8, count: usize) -> Result<(), c_int>;
 }
 
-struct Input { chan: Channel, buffer: Vec<u8> }
+// Shims for input and output channels.
+enum LineBuffer {
+    Done(Vec<u8>),
+    Building(String),
+}
+
+struct Input {
+    chan: Channel,
+    this_line: LineBuffer,
+    to_process: VecDeque<u8>,
+}
 
 impl Input {
     fn new(chan: Channel) -> Self {
-        Self { chan, buffer: vec![] }
+        Self {
+            chan,
+            this_line: LineBuffer::Building(String::new()),
+            to_process: VecDeque::new(),
+        }
     }
 }
 
 impl File for Input {
     fn is_a_tty(&self) -> bool { true }
     fn read(&mut self, buf: *mut u8, count: usize) -> Result<usize, c_int> {
-        while self.buffer.is_empty() {
-            let mut new = vec![];
-            let Ok(_) = self.chan.read::<0>(&mut new, true, true) else {
-                return Err(EIO);
-            };
-            self.buffer.append(&mut new);
+        // Read a new line if we don't have one.
+        while let &mut LineBuffer::Building(ref mut buffer) = &mut self.this_line {
+            while self.to_process.is_empty() {
+                let mut new = vec![];
+                let Ok(_) = self.chan.read::<0>(&mut new, true, true) else {
+                    return Err(EIO);
+                };
+                self.to_process.extend(new);
+            }
+            while let Some(c) = self.to_process.pop_front() {
+                let c = c as char; // not really, no
+                match c {
+                    '\x08' => if buffer.pop().is_some() {
+                        print!("\x08");
+                    },
+                    '\n' => {
+                        println!();
+                        buffer.push('\n');
+                        self.this_line = LineBuffer::Done(core::mem::take(buffer).into_bytes());
+                        break;
+                    },
+                    _ => {
+                        print!("{c}");
+                        buffer.push(c);
+                    },
+                }
+            }
         }
-        let len = self.buffer.len().max(count);
+        let &mut LineBuffer::Done(ref mut bytes) = &mut self.this_line else { unreachable!() };
+        let len = bytes.len().min(count);
         unsafe {
             core::ptr::copy_nonoverlapping(
-                self.buffer.as_ptr(),
+                bytes.as_ptr(),
                 buf,
                 len,
             );
         }
-        self.buffer.drain(0..len);
+        bytes.drain(0..len);
+        if bytes.is_empty() {
+            self.this_line = LineBuffer::Building(String::new());
+        }
         Ok(len)
     }
     fn seek(&mut self, _offset: i64, _by: Seek) -> Result<i64, c_int> { Err(ESPIPE) }
@@ -75,10 +115,68 @@ impl File for Output {
     fn read(&mut self, _buf: *mut u8, _count: usize) -> Result<usize, c_int> { Err(EBADF) }
     fn seek(&mut self, _offset: i64, _by: Seek) -> Result<i64, c_int> { Err(ESPIPE) }
     fn write(&mut self, buf: *const u8, count: usize) -> Result<(), c_int> {
-        
         let buf = unsafe { core::slice::from_raw_parts(buf, count) };
         let _ = self.writer.lock().write_raw(buf);
         Ok(())
+    }
+}
+
+// Actual files backed by actual file systems.
+type FileClient = RPCClient<FileMessage>;
+struct ActualFile { client: FileClient, position: u64 }
+
+impl ActualFile {
+    pub fn len(&mut self) -> Option<u64> {
+        let mut req = Size::new_req();
+        req.init();
+        let r = self.client.send(&req.build()).unwrap();
+        let mut r = r.get_reply().unwrap();
+        Some(r.get_message().unwrap().get_size())
+    }
+    pub fn read_absolute(&mut self, start: u64, len: u32) -> Option<Vec<u8>> {
+        let mut req = Read::new_req();
+        let mut b = req.init();
+        b.set_offset(start);
+        b.set_len(len);
+        let r = self.client.send(&req.build()).unwrap();
+        let mut r = r.get_reply().unwrap();
+        Some(r.get_message().unwrap().get_data().unwrap().to_vec())
+    }
+}
+
+impl File for ActualFile {
+    fn is_a_tty(&self) -> bool { false }
+    fn read(&mut self, buf: *mut u8, count: usize) -> Result<usize, c_int> {
+        if let Some(read) = self.read_absolute(self.position, count.try_into().unwrap()) {
+            unsafe {
+                core::ptr::copy_nonoverlapping(read.as_ptr(), buf, read.len());
+            }
+            Ok(read.len())
+        } else {
+            Err(EIO)
+        }
+    }
+    fn seek(&mut self, offset: i64, by: Seek) -> Result<i64, c_int> {
+        let new_position = match by {
+            Seek::Set => offset,
+            Seek::End => {
+                if let Some(len) = self.len() {
+                    (len as i64) + offset
+                } else {
+                    return Err(EIO)
+                }
+            },
+            Seek::Cur => (self.position as i64) + offset,
+        };
+        if new_position < 0 {
+            Err(EINVAL)
+        } else {
+            self.position = new_position as u64;
+            Ok(new_position)
+        }
+    }
+    fn write(&mut self, buf: *const u8, count: usize) -> Result<(), c_int> {
+        unimplemented!()
     }
 }
 
@@ -113,9 +211,8 @@ pub extern "C" fn fioxa_close(fd: c_int) -> c_int {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fioxa_open(_name: *const c_char, _flags: c_int, _mode: c_int, fd: *mut c_int) -> c_int {
-    return ENOENT;
-    let file = unimplemented!();
+pub extern "C" fn fioxa_open(name: *const c_char, _flags: c_int, _mode: c_int, fd: *mut c_int) -> c_int {
+    let file = unimplemented!(); // ActualFile::new(name);
     // Add it to the FDs
     let mut fds = FILE_DESCRIPTORS.lock();
     let new_fd = if let Some(reuse) = fds.iter().position(|f| f.is_none()) {
