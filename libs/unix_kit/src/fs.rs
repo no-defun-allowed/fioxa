@@ -34,6 +34,7 @@ trait File: Send {
 enum LineBuffer {
     Done(Vec<u8>),
     Building(String),
+    Eof,
 }
 
 struct Input {
@@ -59,14 +60,22 @@ impl File for Input {
         while let &mut LineBuffer::Building(ref mut buffer) = &mut self.this_line {
             while self.to_process.is_empty() {
                 let mut new = vec![];
-                let Ok(_) = self.chan.read::<0>(&mut new, true, true) else {
+                if self.chan.read::<0>(&mut new, true, true).is_err() {
                     return Err(EIO);
-                };
+                }
                 self.to_process.extend(new);
             }
             while let Some(c) = self.to_process.pop_front() {
                 let c = c as char; // not really, no
                 match c {
+                    '\x04' => {
+                        if buffer.is_empty() {
+                            self.this_line = LineBuffer::Eof;
+                            break;
+                        } else {
+                            print!("\x07");
+                        }
+                    },
                     '\x08' => if buffer.pop().is_some() {
                         print!("\x08");
                     },
@@ -83,20 +92,25 @@ impl File for Input {
                 }
             }
         }
-        let &mut LineBuffer::Done(ref mut bytes) = &mut self.this_line else { unreachable!() };
-        let len = bytes.len().min(count);
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                bytes.as_ptr(),
-                buf,
-                len,
-            );
+        match *&mut self.this_line {
+            LineBuffer::Building(_) => unreachable!(),
+            LineBuffer::Done(ref mut bytes) => {
+                let len = bytes.len().min(count);
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        bytes.as_ptr(),
+                        buf,
+                        len,
+                    );
+                }
+                bytes.drain(0..len);
+                if bytes.is_empty() {
+                    self.this_line = LineBuffer::Building(String::new());
+                }
+                Ok(len)
+            },
+            LineBuffer::Eof => Ok(0),
         }
-        bytes.drain(0..len);
-        if bytes.is_empty() {
-            self.this_line = LineBuffer::Building(String::new());
-        }
-        Ok(len)
     }
     fn seek(&mut self, _offset: i64, _by: Seek) -> Result<i64, c_int> { Err(ESPIPE) }
     fn write(&mut self, _buf: *const u8, _count: usize) -> Result<(), c_int> { Err(EBADF) }
@@ -183,8 +197,8 @@ impl File for ActualFile {
 static FILE_DESCRIPTORS: Lazy<Mutex<Vec<Option<Box<dyn File>>>>> = Lazy::new(|| {
     Mutex::new(alloc::vec![
         Some(Box::new(Input::new(userspace::print::STDIN_CHANNEL.clone()))),
-        Some(Box::new(Output::new(&*userspace::print::WRITER_STDOUT))),
-        Some(Box::new(Output::new(&*userspace::print::WRITER_STDERR))),
+        Some(Box::new(Output::new(&userspace::print::WRITER_STDOUT))),
+        Some(Box::new(Output::new(&userspace::print::WRITER_STDERR))),
     ])
 });
 
