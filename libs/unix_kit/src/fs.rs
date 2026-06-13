@@ -1,9 +1,14 @@
 // I/O stuff
 
 use alloc::{boxed::Box, collections::VecDeque, string::String, vec, vec::Vec};
-use core::ffi::{c_char, c_int};
+use core::ffi::{CStr, c_char, c_int};
 use core::convert::TryInto;
-use fioxa_rpc::{client::RPCClient, fs::{Read, Size}, fs_capnp::FileMessage};
+use fioxa_rpc::{
+    client::RPCClient,
+    fs::{Read, StatResult, Size, add_path, stat_by_path},
+    fs_capnp::{FileMessage},
+    service::{connect_service, get_services},
+};
 use kernel_userspace::{channel::Channel, mutex::Mutex, sys::types::SyscallError};
 use userspace::print::Writer;
 use spin::Lazy;
@@ -136,10 +141,47 @@ impl File for Output {
 }
 
 // Actual files backed by actual file systems.
+
+static FILE_DESCRIPTORS: Lazy<Mutex<Vec<Option<Box<dyn File>>>>> = Lazy::new(|| {
+    Mutex::new(alloc::vec![
+        Some(Box::new(Input::new(userspace::print::STDIN_CHANNEL.clone()))),
+        Some(Box::new(Output::new(&userspace::print::WRITER_STDOUT))),
+        Some(Box::new(Output::new(&userspace::print::WRITER_STDERR))),
+    ])
+});
+
+static FILESYSTEMS: Lazy<Mutex<Vec<Channel>>> = Lazy::new(|| {
+    let mut fs = vec![];
+    get_services("FS", false, |chan| {
+        fs.push(chan);
+    }).unwrap();
+    Mutex::new(fs)
+});
+
 type FileClient = RPCClient<FileMessage>;
 struct ActualFile { client: FileClient, position: u64 }
 
 impl ActualFile {
+    pub fn open(pathname: &str) -> Option<Self> {
+        // Parse the pathname. The absolute path will be of the form
+        //   /<id>/<path>
+        let absolute = add_path("1/", pathname);
+        let mut parts = absolute.split("/");
+        parts.next()?;          // Drop the leading /
+        let id: usize = parts.next()?.parse().ok()?;
+        let path = parts.collect::<Vec<_>>().join("/");
+        let path = path.as_str();
+        // Now get that file
+        let filesystems = FILESYSTEMS.lock();
+        let fs = filesystems.get(id)?;
+        match stat_by_path(fs.clone(), &path).ok()? {
+            StatResult::File(file) => {
+                let client = FileClient::new(connect_service(&file).ok()?);
+                Some(ActualFile { client, position: 0 })
+            },
+            _ => None
+        }
+    }
     pub fn len(&mut self) -> Option<u64> {
         let mut req = Size::new_req();
         req.init();
@@ -165,6 +207,7 @@ impl File for ActualFile {
             unsafe {
                 core::ptr::copy_nonoverlapping(read.as_ptr(), buf, read.len());
             }
+            self.position += read.len() as u64;
             Ok(read.len())
         } else {
             Err(EIO)
@@ -194,14 +237,6 @@ impl File for ActualFile {
     }
 }
 
-static FILE_DESCRIPTORS: Lazy<Mutex<Vec<Option<Box<dyn File>>>>> = Lazy::new(|| {
-    Mutex::new(alloc::vec![
-        Some(Box::new(Input::new(userspace::print::STDIN_CHANNEL.clone()))),
-        Some(Box::new(Output::new(&userspace::print::WRITER_STDOUT))),
-        Some(Box::new(Output::new(&userspace::print::WRITER_STDERR))),
-    ])
-});
-
 fn get_descriptor<T>(fd: c_int, hit: impl Fn(&mut Box<dyn File>) -> T, miss: T) -> T {
     let mut fds = FILE_DESCRIPTORS.lock();
     let Ok(fd): Result<usize, _> = fd.try_into() else { return miss };
@@ -226,15 +261,17 @@ pub extern "C" fn fioxa_close(fd: c_int) -> c_int {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fioxa_open(name: *const c_char, _flags: c_int, _mode: c_int, fd: *mut c_int) -> c_int {
-    let file = unimplemented!(); // ActualFile::new(name);
+    let name = unsafe { CStr::from_ptr(name) };
+    let Ok(name) = name.to_str() else { return ENOENT };
+    let Some(file) = ActualFile::open(name) else { return ENOENT };
     // Add it to the FDs
     let mut fds = FILE_DESCRIPTORS.lock();
     let new_fd = if let Some(reuse) = fds.iter().position(|f| f.is_none()) {
-        fds[reuse] = file;
+        fds[reuse] = Some(Box::new(file));
         reuse
     } else {
-        fds.push(file);
-        fds.len()
+        fds.push(Some(Box::new(file)));
+        fds.len() - 1
     };
     unsafe { *fd = new_fd as c_int };
     0
