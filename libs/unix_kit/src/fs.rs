@@ -5,7 +5,7 @@ use core::ffi::{CStr, c_char, c_int};
 use core::convert::TryInto;
 use fioxa_rpc::{
     client::RPCClient,
-    fs::{Read, StatResult, Size, add_path, stat_by_path},
+    fs::{Read, StatResult, Size, Write, add_path, stat_by_path},
     fs_capnp::{FileMessage},
     service::{connect_service, get_services},
 };
@@ -233,7 +233,15 @@ impl File for ActualFile {
         }
     }
     fn write(&mut self, buf: *const u8, count: usize) -> Result<(), c_int> {
-        unimplemented!()
+        let mut req = Write::new_req();
+        let mut b = req.init();
+        b.set_offset(self.position);
+        let slice = unsafe { core::slice::from_raw_parts(buf, count) };
+        b.set_data(slice);
+        let r = self.client.send(&req.build()).unwrap();
+        let _ = r.get_reply().unwrap();
+        self.position += count as u64;
+        Ok(())
     }
 }
 

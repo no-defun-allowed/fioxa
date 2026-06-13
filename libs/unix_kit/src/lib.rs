@@ -6,14 +6,17 @@ extern crate userspace;
 extern crate userspace_slaballoc;
 
 mod fs;
+mod gfx;
 
-use core::ffi::{c_char, c_int, CStr};
+use core::ffi::{c_char, c_int, c_long, CStr};
 use core::ptr::null_mut;
+use core::time::Duration;
 use kernel_sys::{
-    syscall::{sys_exit, sys_map, sys_unmap, sys_set_fs},
+    syscall::{sys_exit, sys_map, sys_set_fs, sys_sleep, sys_unmap, sys_uptime},
     types::VMMapFlags,
 };
 
+// Internal mess-ups
 #[unsafe(no_mangle)]
 pub extern "C" fn fioxa_log(message: *const c_char) {
     let c_str: &CStr = unsafe { CStr::from_ptr(message) };
@@ -27,6 +30,18 @@ pub extern "C" fn fioxa_log(message: *const c_char) {
 #[unsafe(no_mangle)]
 pub extern "C" fn fioxa_panic() -> ! { panic!("libc panicked"); }
 
+// Now onto the "actual" syscalls.
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fioxa_clock(seconds: *mut c_long, nanoseconds: *mut c_long) -> c_int {
+    let uptime = sys_uptime();
+    unsafe {
+        *seconds = (uptime / 1000) as c_long;
+        *nanoseconds = ((uptime % 1000) * 1000000) as c_long;
+    }
+    0
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fioxa_exit(status: c_int) -> ! {
     if status != 0 {
@@ -34,8 +49,6 @@ pub extern "C" fn fioxa_exit(status: c_int) -> ! {
     }
     sys_exit();
 }
-
-// Memory
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fioxa_map(size: usize, result: *mut *mut ()) -> c_int {
@@ -48,6 +61,14 @@ pub extern "C" fn fioxa_map(size: usize, result: *mut *mut ()) -> c_int {
     } else {
         -1
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fioxa_sleep(seconds: c_long, nanoseconds: c_long) -> c_int {
+    let Ok(seconds): Result<u64, _> = seconds.try_into() else { return -1 };
+    let Ok(nanoseconds): Result<u32, _> = nanoseconds.try_into() else { return -1 };
+    sys_sleep(Duration::new(seconds, nanoseconds));
+    0
 }
 
 #[unsafe(no_mangle)]
