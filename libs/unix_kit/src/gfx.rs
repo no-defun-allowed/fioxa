@@ -1,5 +1,4 @@
-use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use base64::prelude::*;
 use itertools::Itertools;
 

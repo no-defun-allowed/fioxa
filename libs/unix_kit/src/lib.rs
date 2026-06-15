@@ -8,6 +8,7 @@ extern crate userspace_slaballoc;
 mod fs;
 mod gfx;
 
+use alloc::{boxed::Box, vec::Vec, vec};
 use core::ffi::{c_char, c_int, c_long, CStr};
 use core::ptr::null_mut;
 use core::time::Duration;
@@ -15,6 +16,19 @@ use kernel_sys::{
     syscall::{sys_exit, sys_map, sys_set_fs, sys_sleep, sys_unmap, sys_uptime},
     types::VMMapFlags,
 };
+
+// Fudge the System V "stack" with auxv, envp, argc, argv
+#[unsafe(no_mangle)]
+pub extern "C" fn fioxa_fudge_sysv_stack() -> *const usize {
+    let mut v: Vec<usize> = vec![];
+    v.push(0);                  // null auxv
+    v.push(0);                  // envp terminator
+    v.push(0);                  // argv terminator
+    v.push(0);                  // argc
+    let slice = v.into_boxed_slice();
+    let leaked = Box::leak(slice);
+    leaked.as_ptr()
+}
 
 // Internal mess-ups
 #[unsafe(no_mangle)]

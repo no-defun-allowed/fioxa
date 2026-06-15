@@ -9,7 +9,7 @@ use fioxa_rpc::{
     fs_capnp::{FileMessage},
     service::{connect_service, get_services},
 };
-use kernel_userspace::{channel::Channel, mutex::Mutex, sys::types::SyscallError};
+use kernel_userspace::{channel::Channel, mutex::Mutex};
 use userspace::print::Writer;
 use spin::Lazy;
 
