@@ -97,7 +97,7 @@ impl File for Input {
                 }
             }
         }
-        match *&mut self.this_line {
+        match self.this_line {
             LineBuffer::Building(_) => unreachable!(),
             LineBuffer::Done(ref mut bytes) => {
                 let len = bytes.len().min(count);

@@ -8,7 +8,7 @@ extern crate userspace_slaballoc;
 mod fs;
 mod gfx;
 
-use alloc::{boxed::Box, vec::Vec, vec};
+use alloc::{boxed::Box, ffi::CString, vec::Vec, vec};
 use core::ffi::{c_char, c_int, c_long, CStr};
 use core::ptr::null_mut;
 use core::time::Duration;
@@ -20,11 +20,23 @@ use kernel_sys::{
 // Fudge the System V "stack" with auxv, envp, argc, argv
 #[unsafe(no_mangle)]
 pub extern "C" fn fioxa_fudge_sysv_stack() -> *const usize {
+    let args = userspace::ARGS.read_vec();
+    let args = str::from_utf8(&args).unwrap();
+    let args = args.split(' '); // not really, but
+    // Now make the stack.
     let mut v: Vec<usize> = vec![];
-    v.push(0);                  // null auxv
-    v.push(0);                  // envp terminator
+    v.push(0);                  // to fill in with argc later
+    let mut argc = 1;
+    v.push(c"fioxa".as_ptr() as usize);
+    for arg in args {
+        let s: *mut i8 = CString::new(arg).unwrap().into_raw();
+        v.push(s as usize);
+        argc += 1;
+    }
+    v[0] = argc;
     v.push(0);                  // argv terminator
-    v.push(0);                  // argc
+    v.push(0);                  // envp terminator
+    v.push(0);                  // null auxv
     let slice = v.into_boxed_slice();
     let leaked = Box::leak(slice);
     leaked.as_ptr()
