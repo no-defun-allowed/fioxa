@@ -22,7 +22,7 @@ use kernel_sys::{
 pub extern "C" fn fioxa_fudge_sysv_stack() -> *const usize {
     let args = userspace::ARGS.read_vec();
     let args = str::from_utf8(&args).unwrap();
-    let args = args.split(' '); // not really, but
+    let args = shlex::Shlex::new(args);
     // Now make the stack.
     let mut v: Vec<usize> = vec![];
     v.push(0);                  // to fill in with argc later

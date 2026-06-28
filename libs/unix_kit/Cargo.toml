@@ -12,6 +12,7 @@ kernel_userspace.workspace = true
 nopng = "0.1.1"
 userspace_slaballoc.workspace = true
 userspace = { workspace = true, features = ["console"] }
+shlex = { version = "2.0.1", default-features = false }
 spin.workspace = true
 
 [lib]
