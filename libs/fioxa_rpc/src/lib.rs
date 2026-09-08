@@ -19,6 +19,7 @@ capnp::generated_code!(pub mod rpc_capnp);
 capnp::generated_code!(pub mod disk_capnp);
 capnp::generated_code!(pub mod echo_capnp);
 capnp::generated_code!(pub mod elf_capnp);
+capnp::generated_code!(pub mod fb_capnp);
 capnp::generated_code!(pub mod fs_capnp);
 capnp::generated_code!(pub mod interrupt_capnp);
 capnp::generated_code!(pub mod net_capnp);
@@ -37,6 +38,15 @@ pub mod disk {
 pub mod echo {
     crate::generate_rpc!(crate::echo_capnp::EchoMessage, Service;
         Echo @ Echo @ echo(crate::echo_capnp::echo::Owned) -> crate::echo_capnp::echo::Owned;
+    );
+}
+
+pub mod fb {
+    use crate::fb_capnp;
+    crate::generate_rpc!(crate::fb_capnp::FramebufferMessage, FramebufferService;
+        GetInfo @ GetInfo @ get_info(fb_capnp::framebuffer_get_info::Owned) -> fb_capnp::framebuffer_info::Owned;
+        Acquire @ Acquire @ acquire(fb_capnp::framebuffer_acquire::Owned) -> fb_capnp::framebuffer_changed::Owned;
+        Release @ Release @ release(fb_capnp::framebuffer_release::Owned) -> fb_capnp::framebuffer_changed::Owned;
     );
 }
 

@@ -99,7 +99,9 @@ fn redraw_screen_task() {
     let writer = WRITER.get().unwrap();
     // TODO: Can we VSYNC this? Could stop the tearing.
     loop {
-        writer.lock().redraw_if_needed();
+        if super::is_kernel_drawing_screen() {
+            writer.lock().redraw_if_needed();
+        }
         // rate limit redraw
         sys_sleep(Duration::from_millis(16));
     }
@@ -125,5 +127,6 @@ pub fn gop_entry() {
     };
 
     sys_process_spawn_thread(monitor_cursor_task);
+    sys_process_spawn_thread(super::server::fb_server_task);
     redraw_screen_task();
 }

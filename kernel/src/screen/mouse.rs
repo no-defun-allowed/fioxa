@@ -59,17 +59,19 @@ pub fn print_cursor(pos: &mut Pos, mouse: MousePacket) {
     pos.x = pos.x.saturating_add_signed(mouse.x_mov as isize);
     pos.y = pos.y.saturating_add_signed(mouse.y_mov as isize);
 
-    with_held_interrupts(|| {
-        let gop_mutex = &mut WRITER.get().unwrap().lock();
-        let gop_info = &gop_mutex.screen.gop;
-
-        if pos.x > gop_info.horizontal - 8 {
-            pos.x = gop_info.horizontal - 8
-        }
-
-        if pos.y > gop_info.vertical - 16 {
-            pos.y = gop_info.vertical - 16
-        }
-        gop_mutex.update_cursor(*pos, colour);
-    });
+    if super::is_kernel_drawing_screen() {
+        with_held_interrupts(|| {
+            let gop_mutex = &mut WRITER.get().unwrap().lock();
+            let gop_info = &gop_mutex.screen.gop;
+            
+            if pos.x > gop_info.horizontal - 8 {
+                pos.x = gop_info.horizontal - 8
+            }
+            
+            if pos.y > gop_info.vertical - 16 {
+                pos.y = gop_info.vertical - 16
+            }
+            gop_mutex.update_cursor(*pos, colour);
+        });
+    }
 }

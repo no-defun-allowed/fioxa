@@ -29,6 +29,7 @@ const TO_BUILD: &[(&str, Option<&str>, &str)] = &[
     ("apps", Some("test"), "apps/test"),
     ("apps", Some("test_capnp"), "apps/test_capnp"),
     ("apps", Some("test_fs_reg"), "apps/test_fs_reg"),
+    ("apps", Some("test_graphics"), "apps/test_graphics"),
     ("drivers", Some("amd_pcnet"), "drivers/amd_pcnet"),
     ("drivers", Some("ps2"), "drivers/ps2"),
     ("system", Some("fat"), "system/fat"),
