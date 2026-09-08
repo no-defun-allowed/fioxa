@@ -2,6 +2,7 @@
 
 pub mod client;
 pub mod elf;
+pub mod fb;
 pub mod fs;
 pub mod interrupt;
 pub mod pci;
@@ -38,15 +39,6 @@ pub mod disk {
 pub mod echo {
     crate::generate_rpc!(crate::echo_capnp::EchoMessage, Service;
         Echo @ Echo @ echo(crate::echo_capnp::echo::Owned) -> crate::echo_capnp::echo::Owned;
-    );
-}
-
-pub mod fb {
-    use crate::fb_capnp;
-    crate::generate_rpc!(crate::fb_capnp::FramebufferMessage, FramebufferService;
-        GetInfo @ GetInfo @ get_info(fb_capnp::framebuffer_get_info::Owned) -> fb_capnp::framebuffer_info::Owned;
-        Acquire @ Acquire @ acquire(fb_capnp::framebuffer_acquire::Owned) -> fb_capnp::framebuffer_changed::Owned;
-        Release @ Release @ release(fb_capnp::framebuffer_release::Owned) -> fb_capnp::framebuffer_changed::Owned;
     );
 }
 

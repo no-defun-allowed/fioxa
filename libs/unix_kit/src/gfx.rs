@@ -3,6 +3,10 @@ use base64::prelude::*;
 use itertools::Itertools;
 
 #[unsafe(no_mangle)]
+pub extern "C" fn gfx_setup() {
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn gfx_draw_image(fb: *mut u32, width: u32, height: u32) {
     let size = (4 * width * height) as usize;
     let data = unsafe { core::slice::from_raw_parts(fb as *const u8, size) };

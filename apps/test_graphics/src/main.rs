@@ -20,60 +20,7 @@ mod mandelbrot;
 
 init_userspace!(main);
 
-type FBClient = RPCClient<fb_capnp::FramebufferMessage>;
-
-fn acquire(client: &mut FBClient) {
-    let mut c = fb::Acquire::new_req();
-    c.init();
-    let r = client.send(&c.build()).unwrap();
-    r.get_reply().unwrap();
-}
-fn release(client: &mut FBClient) {
-    let mut c = fb::Release::new_req();
-    c.init();
-    let r = client.send(&c.build()).unwrap();
-    r.get_reply().unwrap();
-}
-
-struct Framebuffer {
-    capability: Handle,
-    offset: usize,
-    size: usize,
-    width: u16,
-    height: u16,
-    stride: u16,
-}
-
-fn get_fb(client: &mut FBClient) -> Framebuffer {
-    let mut c = fb::GetInfo::new_req();
-    c.init();
-    let mut r = client.send(&c.build()).unwrap();
-    let mut h = r.take_handles_rpc();
-    let mut r = r.get_reply().unwrap();
-    let r = r.get_message().unwrap();
-    println!("framebuffer at {:?} size {:?}, width {:?} height {:?} stride {:?}",
-             r.get_offset(), r.get_size(),
-             r.get_width(), r.get_height(), r.get_stride());
-    Framebuffer {
-        capability: h.take_handle(r.get_capability().unwrap()).unwrap(),
-        offset: r.get_offset() as usize,
-        size: r.get_size() as usize,
-        width: r.get_width(),
-        height: r.get_height(),
-        stride: r.get_stride(),
-    }
-}
-
-fn map_in_fb(fb: &Framebuffer) -> *mut () {
-    unsafe {
-        let base = sys_map(Some(*fb.capability), VMMapFlags::USERSPACE | VMMapFlags::WRITEABLE,
-                           core::ptr::null_mut(),
-                           fb.size).unwrap();
-        base.add(fb.offset)
-    }
-}
-
-fn draw_on(fb: &Framebuffer, mem: *mut ()) {
+fn draw_on(fb: &fb::Framebuffer, mem: *mut ()) {
     let mem = mem as *mut u8;
     for y in 0..fb.height {
         for x in 0..fb.width {
@@ -86,13 +33,12 @@ fn draw_on(fb: &Framebuffer, mem: *mut ()) {
 }
 
 pub fn main() {
-    let fb_channel = get_and_connect_service("FB").unwrap();
-    let mut fb_client = FBClient::new(fb_channel);
-    let fb = get_fb(&mut fb_client);
-    acquire(&mut fb_client);
-    let base = map_in_fb(&fb);
-    println!("fb at {base:?}");
+    let mut fb_client = fb::FBClient::connect();
+    let fb = fb_client.get_framebuffer();
+    println!("Got {fb:?}");
+    fb_client.acquire();
+    let base = fb.map();
     draw_on(&fb, base);
     sys_sleep(Duration::from_millis(10000));
-    release(&mut fb_client);
+    fb_client.release();
 }

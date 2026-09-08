@@ -8,6 +8,7 @@ capnpc = "0.25.3"
 
 [dependencies]
 kernel_userspace.workspace = true
+kernel_sys.workspace = true
 
 anyhow.workspace = true
 capnp = { version = "0.25.3", default-features = false, features = ["alloc"] }
