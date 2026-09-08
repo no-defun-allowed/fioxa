@@ -78,7 +78,7 @@ fn draw_on(fb: &Framebuffer, mem: *mut ()) {
     for y in 0..fb.height {
         for x in 0..fb.width {
             let loc = 4 * (fb.stride as usize * y as usize + x as usize);
-            let c = mandelbrot::mandel(fb.width, fb.height, 1000, -2.0, 0.5, -1.0, 1.0, x, y);
+            let c = mandelbrot::mandel(fb.width, fb.height, 100, -2.0, 0.5, -1.0, 1.0, x, y);
             let color = u32::from_le_bytes([c.0, c.1, c.2, 0xFF]);
             unsafe { core::ptr::write_volatile(mem.add(loc) as *mut u32, color) }
         }
