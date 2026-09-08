@@ -11,7 +11,7 @@ unsafe impl Send for Gfx { }
 static GFX: Mutex<Option<Gfx>> = Mutex::new(None);
 
 #[repr(C)]
-struct Shape {
+pub struct Shape {
     width: u16,
     height: u16,
 }
@@ -22,6 +22,7 @@ pub extern "C" fn gfx_setup() -> Shape {
     let mut client = fb::FBClient::connect();
     let framebuffer = client.get_framebuffer();
     let map = framebuffer.map() as *mut u32;
+    client.acquire();
     let shape = Shape { width: framebuffer.width, height: framebuffer.height };
     *lock = Some(Gfx { client, framebuffer, map });
     shape
@@ -42,6 +43,7 @@ pub extern "C" fn gfx_draw_image(fb: *mut u32, width: u32, height: u32) {
     }
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn gfx_destroy() {
     let mut lock = GFX.lock();
     let Some(ref mut gfx) = *lock else {
