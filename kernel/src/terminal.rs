@@ -123,6 +123,10 @@ impl Writer<'_> {
                 .draw_cursor(self.mouse_pos, self.mouse_colour, MOUSE_POINTER);
         }
     }
+
+    pub fn dirty_everything(&mut self) {
+        self.tty.dirty_box = Some(BoundingBox::from_max(self.tty.dims_x, self.tty.dims_y));
+    }
 }
 
 impl TTY {
