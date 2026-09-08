@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 fioxa_rpc.workspace = true
+input.workspace = true
 kernel_sys.workspace = true
 kernel_userspace.workspace = true
 userspace_slaballoc.workspace = true

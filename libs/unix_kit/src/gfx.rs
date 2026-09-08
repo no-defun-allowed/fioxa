@@ -1,5 +1,5 @@
-use fioxa_rpc::fb;
-use kernel_userspace::mutex::Mutex;
+use fioxa_rpc::{fb, service::get_and_connect_service};
+use kernel_userspace::{channel::Channel, mutex::Mutex};
 
 struct Gfx {
     client: fb::FBClient,
@@ -51,4 +51,56 @@ pub extern "C" fn gfx_destroy() {
     };
     gfx.client.release();
     *lock = None;
+}
+
+static KEYBOARD: Mutex<Option<Channel>> = Mutex::new(None);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn keyboard_setup() {
+    let mut lock = KEYBOARD.lock();
+    *lock = Some(get_and_connect_service("INPUT:KB").unwrap());
+}
+
+#[repr(C)]
+pub struct KeyboardPoll {
+    state: u8,
+    key: u32,
+}
+
+use input::keyboard::virtual_code::*;
+fn translate_key(c: VirtualKeyCode) -> u32 {
+    match c {
+        VirtualKeyCode::Letter(letter) => match letter {
+            Letter::X => 'X' as u32,
+            Letter::C => 'C' as u32,
+            _ => 0x123,
+        },
+        VirtualKeyCode::Control(key) => match key {
+            Control::Escape => 0x1B,
+            Control::ArrowLeft => 0x2190,
+            Control::ArrowUp => 0x2191,
+            Control::ArrowRight => 0x2192,
+            Control::ArrowDown => 0x2193,
+            _ => 0x123,
+        },
+        _ => 0x123,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn keyboard_poll() -> KeyboardPoll {
+    let lock = KEYBOARD.lock();
+    let Some(ref chan) = *lock else {
+        panic!("call keyboard_setup before keyboard_poll");
+    };
+    use input::keyboard::KeyboardEvent;
+    use kernel_userspace::input::InputServiceMessage;
+    match chan.read_val::<1, InputServiceMessage>(false) {
+        Ok((event, _)) => match event {
+            InputServiceMessage::KeyboardEvent(KeyboardEvent::Down(c)) => KeyboardPoll { state: 1, key: translate_key(c) },
+            InputServiceMessage::KeyboardEvent(KeyboardEvent::Up(c)) => KeyboardPoll { state: 2, key: translate_key(c) },
+            _ => unreachable!(),
+        },
+        Err(_) => KeyboardPoll { state: 0, key: 0 },
+    }
 }
