@@ -16,6 +16,8 @@ extern crate alloc;
 extern crate userspace;
 extern crate userspace_slaballoc;
 
+mod mandelbrot;
+
 init_userspace!(main);
 
 type FBClient = RPCClient<fb_capnp::FramebufferMessage>;
@@ -76,8 +78,8 @@ fn draw_on(fb: &Framebuffer, mem: *mut ()) {
     for y in 0..fb.height {
         for x in 0..fb.width {
             let loc = 4 * (fb.stride as usize * y as usize + x as usize);
-            let byte = (x ^ y) as u8;
-            let color = u32::from_le_bytes([byte, byte, byte, byte]);
+            let c = mandelbrot::mandel(fb.width, fb.height, 1000, -2.0, 0.5, -1.0, 1.0, x, y);
+            let color = u32::from_le_bytes([c.0, c.1, c.2, 0xFF]);
             unsafe { core::ptr::write_volatile(mem.add(loc) as *mut u32, color) }
         }
     }
@@ -91,6 +93,6 @@ pub fn main() {
     let base = map_in_fb(&fb);
     println!("fb at {base:?}");
     draw_on(&fb, base);
-    sys_sleep(Duration::from_millis(2000));
+    sys_sleep(Duration::from_millis(10000));
     release(&mut fb_client);
 }

@@ -11,3 +11,4 @@ kernel_sys.workspace = true
 kernel_userspace.workspace = true
 userspace_slaballoc.workspace = true
 userspace.workspace = true
+libm = "0.2"
