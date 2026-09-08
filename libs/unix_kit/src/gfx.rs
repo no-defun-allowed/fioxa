@@ -1,27 +1,52 @@
-use alloc::string::String;
-use base64::prelude::*;
-use itertools::Itertools;
+use fioxa_rpc::fb;
+use kernel_userspace::mutex::Mutex;
+
+struct Gfx {
+    client: fb::FBClient,
+    framebuffer: fb::Framebuffer,
+    map: *mut u32,
+}
+unsafe impl Send for Gfx { }
+
+static GFX: Mutex<Option<Gfx>> = Mutex::new(None);
+
+#[repr(C)]
+struct Shape {
+    width: u16,
+    height: u16,
+}
 
 #[unsafe(no_mangle)]
-pub extern "C" fn gfx_setup() {
+pub extern "C" fn gfx_setup() -> Shape {
+    let mut lock = GFX.lock();
+    let mut client = fb::FBClient::connect();
+    let framebuffer = client.get_framebuffer();
+    let map = framebuffer.map() as *mut u32;
+    let shape = Shape { width: framebuffer.width, height: framebuffer.height };
+    *lock = Some(Gfx { client, framebuffer, map });
+    shape
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn gfx_draw_image(fb: *mut u32, width: u32, height: u32) {
-    let size = (4 * width * height) as usize;
-    let data = unsafe { core::slice::from_raw_parts(fb as *const u8, size) };
-    let spec = nopng::ImageSpec::new(width, height, nopng::PixelFormat::Rgba8);
-    let png = nopng::encode_image(&spec, data).unwrap();
-    let encoded = BASE64_STANDARD.encode(png);
-    let mut first = true;
-    for chunk in &encoded.chars().chunks(4096) {
-        let c: String = chunk.collect();
-        if first {
-            print!("\x1B_Ga=T,f=100,m=1;{c}\x1B\\");
-        } else {
-            print!("\x1B_Gm=1;{c}\x1B\\");
+    let lock = GFX.lock();
+    let Some(ref gfx) = *lock else {
+        panic!("call gfx_setup before gfx_draw_image!");
+    };
+    for y in 0..height {
+        unsafe {
+            let target_start = gfx.map.add((gfx.framebuffer.stride as u32 * y) as usize);
+            let source_start = fb.add((width * y) as usize);
+            core::ptr::copy_nonoverlapping(source_start, target_start, width as usize);
         }
-        first = false;
     }
-    print!("\x1B_Gm=0;\x1B\\");
+}
+
+pub extern "C" fn gfx_destroy() {
+    let mut lock = GFX.lock();
+    let Some(ref mut gfx) = *lock else {
+        panic!("call gfx_setup before gfx_destroy");
+    };
+    gfx.client.release();
+    *lock = None;
 }
