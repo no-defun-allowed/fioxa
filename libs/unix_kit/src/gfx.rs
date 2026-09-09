@@ -44,6 +44,27 @@ pub extern "C" fn gfx_draw_image(fb: *mut u32, width: u32, height: u32) {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn gfx_draw_image_scaled(fb: *mut u32, width: u32, height: u32, scale: u32) {
+    let lock = GFX.lock();
+    let Some(ref gfx) = *lock else {
+        panic!("call gfx_setup before gfx_draw_image_scaled!");
+    };
+    unsafe {
+        for y in 0..height {
+            for sy in 0..scale {
+                let target_start = gfx.map.add((gfx.framebuffer.stride as u32 * (scale * y) + sy) as usize);
+                let source_start = fb.add((width * y) as usize);
+                for x in 0..width {
+                    for sx in 0..scale {
+                        *target_start.add((scale * x + sx) as usize) = *source_start.add(x as usize);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn gfx_destroy() {
     let mut lock = GFX.lock();
     let Some(ref mut gfx) = *lock else {
