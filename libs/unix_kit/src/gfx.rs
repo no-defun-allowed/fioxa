@@ -52,7 +52,7 @@ pub extern "C" fn gfx_draw_image_scaled(fb: *mut u32, width: u32, height: u32, s
     unsafe {
         for y in 0..height {
             for sy in 0..scale {
-                let target_start = gfx.map.add((gfx.framebuffer.stride as u32 * (scale * y) + sy) as usize);
+                let target_start = gfx.map.add((gfx.framebuffer.stride as u32 * ((scale * y) + sy)) as usize);
                 let source_start = fb.add((width * y) as usize);
                 for x in 0..width {
                     for sx in 0..scale {
